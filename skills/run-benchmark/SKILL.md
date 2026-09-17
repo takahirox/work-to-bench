@@ -16,10 +16,12 @@ new run directory outside existing Git working trees and outside the case. Do no
 change the benchmark task, starting state, or context to improve a result.
 
 Invoke `scripts/benchmark_runner.py` relative to this Skill directory. The shipped
-adapter is `codex`, using the existing CLI authentication. Its default permission
-policy allows workspace edits, disables tool network access, and never escalates
-permissions. If that policy prevents task completion, report the limitation;
-do not silently rerun with broader permissions.
+adapter is `codex`, using the existing CLI authentication. Pass user-selected
+execution conditions through `--conditions`; omitted settings inherit agent and
+environment defaults. Do not invent restrictions or broaden conditions on failure.
+Report unsupported conditions and host-policy conflicts without retrying under a
+different policy. Distinguish requested/submitted conditions from verified effective
+settings; the shipped adapter cannot verify effective settings.
 
 Run only the configurations and repetitions within the user's request. Each run
 consumes the selected agent's allowance. The runner does not retry runs or switch

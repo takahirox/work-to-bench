@@ -15,6 +15,7 @@ import sys
 import time
 
 from runner_adapters import ADAPTERS, reject_constant
+from execution_conditions import load_conditions
 
 
 class RunError(ValueError):
@@ -183,7 +184,7 @@ def collect_artifacts(output, meta, case):
 
 
 def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
-                  executable='codex', timeout=1800, pricing=None, adapter=None):
+                  executable='codex', timeout=1800, pricing=None, adapter=None, conditions=None):
     """Run once. A custom adapter can implement the three CodexAdapter methods."""
     if os.name != 'posix':
         raise RunError('The process-group runner currently requires macOS or Linux')
@@ -195,9 +196,11 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
         if agent not in ADAPTERS:
             raise RunError('Unknown agent adapter')
         adapter = ADAPTERS[agent]()
-    policy = getattr(adapter, 'policy', {'sandbox': None, 'network_access': None, 'approval_policy': None})
-    if not isinstance(policy, dict):
-        raise RunError('Adapter policy must be a dictionary')
+    requested = load_conditions(conditions)
+    if hasattr(adapter, 'configure'):
+        adapter.configure(requested)
+    elif requested:
+        raise RunError('Adapter does not support execution conditions')
     rates = pricing_table(pricing, model)
     if os.sep in str(executable):
         executable = str(Path(executable).resolve())
@@ -220,11 +223,15 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
     output.mkdir(mode=0o700)
     begin = time.monotonic()
     result = {
-        'schema_version': 1, 'case_id': meta['id'], 'status': 'preparing',
+        'schema_version': 2, 'case_id': meta['id'], 'status': 'preparing',
         'agent': {'adapter': adapter.name, 'provider': adapter.provider, 'version': None,
                   'requested_model': model, 'reported_model': None, 'reasoning_effort': effort},
         'configuration': {'timeout_seconds': timeout,
-                          **policy},
+                          'execution_conditions': {
+                              'requested': requested, 'submitted': None,
+                              'effective': None, 'verification': 'unverified',
+                              'omitted': 'inherit_agent_environment',
+                              'supported': list(getattr(adapter, 'supported_conditions', ())) }},
         'starting_repositories': [{'path': r.get('path', '.'), 'commit': r['start_commit']}
                                   for r in case.repository_records(meta)],
         'timing': {'started_at': now(), 'finished_at': None, 'elapsed_seconds': None,
@@ -276,6 +283,8 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
         with (inputs / 'invocation.md').open('rb') as incoming, stdout.open('wb') as out, stderr.open('ab') as err:
             process = subprocess.Popen(command, cwd=workspace, stdin=incoming, stdout=out, stderr=err,
                                        env=env, start_new_session=True)
+            result['configuration']['execution_conditions']['submitted'] = requested.copy()
+            write_json(output / 'result.json', result)
             try:
                 process.wait(timeout=timeout)
                 result['status'] = 'completed' if process.returncode == 0 else 'agent_failed'
@@ -338,6 +347,7 @@ def main():
     parser.add_argument('--effort', choices=('none', 'minimal', 'low', 'medium', 'high', 'xhigh'))
     parser.add_argument('--executable', default='codex')
     parser.add_argument('--timeout', type=float, default=1800)
+    parser.add_argument('--conditions', help='JSON execution conditions; omitted keys inherit agent settings')
     parser.add_argument('--pricing', help='JSON table of per-million-token USD rates for this model')
     args = parser.parse_args()
     def terminate(signum, frame):
@@ -345,8 +355,8 @@ def main():
     signal.signal(signal.SIGTERM, terminate)
     try:
         result = run_benchmark(args.case_directory, args.output, model=args.model, effort=args.effort,
-                               agent=args.agent, executable=args.executable, timeout=args.timeout, pricing=args.pricing)
-    except (RunError, OSError) as exc:
+                               agent=args.agent, executable=args.executable, timeout=args.timeout, pricing=args.pricing, conditions=args.conditions)
+    except (ValueError, OSError) as exc:
         print('error: ' + str(exc), file=sys.stderr)
         return 1
     print(json.dumps({'case_id': result['case_id'], 'status': result['status'],

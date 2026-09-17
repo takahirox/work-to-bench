@@ -1,6 +1,7 @@
 """Agent-specific invocation and telemetry. No case or process lifecycle logic."""
 import json
 from pathlib import Path
+from execution_conditions import codex_conditions, SUPPORTED
 
 
 def reject_constant(value):
@@ -10,32 +11,36 @@ def reject_constant(value):
 class CodexAdapter:
     name = 'codex'
     provider = 'openai'
-    policy = {'sandbox': 'workspace-write', 'network_access': False, 'approval_policy': 'never'}
+    supported_conditions = SUPPORTED
+
+    def configure(self, conditions):
+        self.conditions = codex_conditions(conditions)
 
     def version_command(self, executable):
         return [executable, '--version']
 
     def command(self, executable, workspace, model, effort):
-        # Explicit settings keep benchmark policy independent of personal config.
-        settings = {
-            'model_provider': 'openai',
-            'approval_policy': 'never',
-            'sandbox_workspace_write.network_access': False,
-            'sandbox_workspace_write.exclude_slash_tmp': True,
-            'sandbox_workspace_write.exclude_tmpdir_env_var': True,
-            'sandbox_workspace_write.writable_roots': [],
-            'features.apps': False,
-            'features.hooks': False,
-            'features.memories': False,
-            'features.multi_agent': False,
-            'web_search': 'disabled',
-            'projects.' + json.dumps(str(workspace)) + '.trust_level': 'untrusted',
-        }
+        conditions = getattr(self, 'conditions', {})
+        settings = {}
+        for key in ('approval_policy', 'approvals_reviewer', 'web_search'):
+            if key in conditions:
+                settings[key] = conditions[key]
+        for key in ('network_access', 'exclude_slash_tmp', 'exclude_tmpdir_env_var', 'writable_roots'):
+            if key in conditions:
+                settings['sandbox_workspace_write.' + key] = conditions[key]
+        for key, value in conditions.get('features', {}).items():
+            settings['features.' + key] = value
+        if 'project_trust' in conditions:
+            settings['projects.' + json.dumps(str(workspace)) + '.trust_level'] = conditions['project_trust']
         if effort is not None:
             settings['model_reasoning_effort'] = effort
-        command = [executable, 'exec', '--json', '--ephemeral', '--ignore-user-config',
-                   '--sandbox', 'workspace-write', '--color', 'never',
+        command = [executable, 'exec', '--json', '--color', 'never',
                    '--model', model, '--cd', str(workspace)]
+        if 'sandbox' in conditions:
+            command.extend(['--sandbox', conditions['sandbox']])
+        for key, flag in (('ignore_user_config', '--ignore-user-config'), ('ephemeral', '--ephemeral')):
+            if conditions.get(key):
+                command.append(flag)
         for key, value in settings.items():
             command.extend(['-c', key + '=' + json.dumps(value)])
         return command + ['-']
