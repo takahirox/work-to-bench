@@ -147,6 +147,26 @@ def stop_process(process):
     process.wait()
 
 
+def query_version(command, env, workspace, stderr, timeout=15):
+    """A version probe is also an external process; stop its entire process group."""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=env, cwd=workspace, start_new_session=True)
+    try:
+        try:
+            out, err = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            stop_process(process)
+            out, err = process.communicate()
+            stderr.write_bytes(err)
+            raise RunError('Agent version query timed out')
+        stderr.write_bytes(err)
+        if process.returncode:
+            raise RunError('Unable to determine agent version')
+        return out.decode('utf-8', errors='replace').strip()[:200]
+    finally:
+        stop_process(process)
+
+
 def collect_artifacts(output, meta, case):
     artifacts, errors = [], []
     workspace = output / 'workspace'
@@ -209,6 +229,9 @@ def run_benchmark(case_directory, output, *, model=None, effort=None, agent='cod
     if pricing is not None and not model:
         raise RunError('Pricing requires an explicit model')
     executable = executable or 'codex'
+    stdout_name = getattr(adapter, 'stdout_filename', 'stdout.jsonl')
+    if stdout_name not in ('stdout.jsonl', 'stdout.log'):
+        raise RunError('Unsupported stdout filename')
     requested = load_conditions(conditions)
     if hasattr(adapter, 'configure'):
         adapter.configure(requested)
@@ -235,9 +258,6 @@ def run_benchmark(case_directory, output, *, model=None, effort=None, agent='cod
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir(mode=0o700)
     begin = time.monotonic()
-    stdout_name = getattr(adapter, 'stdout_filename', 'stdout.jsonl')
-    if stdout_name not in ('stdout.jsonl', 'stdout.log'):
-        raise RunError('Unsupported stdout filename')
     result = {
         'schema_version': 2, 'case_id': meta['id'], 'status': 'preparing',
         'agent': {'adapter': adapter.name, 'provider': adapter.provider, 'version': None,
@@ -288,13 +308,7 @@ def run_benchmark(case_directory, output, *, model=None, effort=None, agent='cod
         env = process_environment()
         version_command = adapter.version_command(executable)
         if version_command is not None:
-            version = subprocess.run(version_command, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, text=True, env=env, cwd=workspace, timeout=15)
-            if version.stderr:
-                stderr.write_text(version.stderr, encoding='utf-8')
-            if version.returncode:
-                raise RunError('Unable to determine agent version')
-            result['agent']['version'] = version.stdout.strip()[:200]
+            result['agent']['version'] = query_version(version_command, env, workspace, stderr)
         command = adapter.command(executable, workspace, model, effort)
         result['command'] = command
         result['status'] = 'running'

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 from unittest.mock import patch
 import test_benchmark_case as support
@@ -122,3 +123,36 @@ if os.environ.get('COMMAND_MODE')=='fail': sys.exit(7)
                 '--output',str(self.run_dir),*args], capture_output=True,text=True)
             self.assertEqual(process.returncode,1)
             self.assertFalse(self.run_dir.exists())
+
+    def test_launch_error_preserves_result_without_claiming_submission(self):
+        self.config['command'] = [str(self.root/'missing-agent')]
+        result = self.run_case()
+        self.assertEqual(result['status'], 'runner_failed')
+        self.assertIsNone(result['configuration']['execution_conditions']['submitted'])
+        self.assertTrue((self.run_dir/'result.json').is_file())
+        self.assertTrue(result['artifacts'])
+
+    def test_wrapper_rejection_keeps_conditions_and_does_not_retry(self):
+        self.script.write_text("from pathlib import Path; import sys; "
+                               "Path('calls.txt').write_text('one'); "
+                               "print('unsupported condition value',file=sys.stderr); sys.exit(2)")
+        self.config['command'].append('{conditions_file}')
+        self.config['supported_conditions'] = ['network_access']
+        result = self.run_case(conditions={'network_access':'invalid'})
+        self.assertEqual(result['status'], 'agent_failed')
+        self.assertEqual(result['exit_code'], 2)
+        self.assertIn('unsupported condition', (self.run_dir/'stderr.log').read_text())
+        self.assertEqual(result['configuration']['execution_conditions']['submitted'], {'network_access':'invalid'})
+        self.assertIsNone(result['configuration']['execution_conditions']['effective'])
+
+    def test_version_probe_timeout_stops_children(self):
+        script = self.root/'version.py'
+        script.write_text("import subprocess,sys,time; "
+            "subprocess.Popen([sys.executable,'-c',\"import time;from pathlib import Path;time.sleep(1);Path('leaked.txt').touch()\"]); "
+            "print('probe diagnostic',file=sys.stderr,flush=True); time.sleep(10)")
+        stderr = self.root/'version.log'
+        with self.assertRaisesRegex(ValueError,'timed out'):
+            runner.query_version([sys.executable,str(script)],runner.process_environment(),self.root,stderr,timeout=0.2)
+        self.assertIn('probe diagnostic',stderr.read_text())
+        time.sleep(1.1)
+        self.assertFalse((self.root/'leaked.txt').exists())
