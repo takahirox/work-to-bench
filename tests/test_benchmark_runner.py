@@ -32,8 +32,6 @@ if '--version' in sys.argv:
  if os.environ.get('BENCH_TEST_MODE')=='versionfail':
   print('version probe diagnostic',file=sys.stderr); sys.exit(2)
  print('codex-test 1.0'); sys.exit(0)
-assert sys.argv[sys.argv.index('--sandbox')+1] == 'workspace-write'
-assert '--ignore-user-config' in sys.argv
 workspace=Path(sys.argv[sys.argv.index('--cd')+1])
 assert Path.cwd() == workspace
 prompt=sys.stdin.read()
@@ -276,7 +274,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}),flush=True)
                 return value
         result = self.run_case(adapter=CustomAdapter())
         self.assertEqual(result['status'], 'completed')
-        self.assertIsNone(result['configuration']['sandbox'])
+        self.assertIsNone(result['configuration']['execution_conditions']['effective'])
         self.assertEqual(result['agent']['provider'], 'fixture-provider')
         self.assertEqual(result['cost']['reported_usd'], '0.0123')
 
@@ -285,3 +283,64 @@ print(json.dumps({'type':'turn.completed','usage':usage}),flush=True)
             result = self.run_case()
         self.assertEqual(result['status'], 'runner_failed')
         self.assertIn('version probe diagnostic', (self.run_dir / 'stderr.log').read_text())
+
+    def test_conditions_inherit_without_implicit_restrictions(self):
+        result = self.run_case()
+        command = result['command']
+        for flag in ('--sandbox', '--ignore-user-config', '--ephemeral'):
+            self.assertNotIn(flag, command)
+        self.assertFalse(any('network_access' in arg or 'approval_policy' in arg or 'features.' in arg for arg in command))
+        conditions = result['configuration']['execution_conditions']
+        self.assertEqual(conditions['requested'], {})
+        self.assertEqual(conditions['submitted'], {})
+        self.assertIsNone(conditions['effective'])
+
+    def test_explicit_conditions_are_forwarded_and_recorded(self):
+        conditions = {'sandbox': 'workspace-write', 'network_access': True,
+                      'approval_policy': 'on-request', 'web_search': 'live',
+                      'features': {'apps': True, 'hooks': False},
+                      'writable_roots': [str(self.root)], 'ignore_user_config': True,
+                      'exclude_slash_tmp': False, 'ephemeral': True}
+        result = self.run_case(conditions=conditions)
+        self.assertEqual(result['status'], 'completed')
+        self.assertIn('sandbox_workspace_write.network_access=true', result['command'])
+        self.assertIn('features.apps=true', result['command'])
+        self.assertIn('--ignore-user-config', result['command'])
+        saved = result['configuration']['execution_conditions']
+        self.assertEqual(saved['requested'], conditions)
+        self.assertEqual(saved['submitted'], conditions)
+        self.assertIsNone(saved['effective'])
+
+    def test_invalid_conditions_fail_before_creating_output(self):
+        for value in ({'network_access': True}, {'sandbox': 'read-only', 'network_access': True},
+                      {'typo': True}, {'features': {'typo': False}},
+                      {'ignore_user_config': 1}, {'writable_roots': ['relative']},
+                      {'sandbox': 'workspace-write', 'writable_roots': ['/bad\x00path']}, []):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.run_case(conditions=value)
+            self.assertFalse(self.run_dir.exists())
+
+    def test_conditions_file_and_duplicate_keys(self):
+        conditions = self.root / 'conditions.json'
+        conditions.write_text('{"web_search":"disabled"}')
+        result = self.run_case(conditions=conditions)
+        self.assertEqual(result['configuration']['execution_conditions']['requested'], {'web_search':'disabled'})
+        conditions.write_text('{"web_search":"live","web_search":"disabled"}')
+        with self.assertRaisesRegex(ValueError, 'Duplicate'):
+            self.run_case(conditions=conditions)
+
+    def test_version_failure_does_not_claim_conditions_submitted(self):
+        with patch.dict(os.environ, BENCH_TEST_MODE='versionfail'):
+            result = self.run_case(conditions={'web_search':'disabled'})
+        self.assertIsNone(result['configuration']['execution_conditions']['submitted'])
+
+    def test_cli_conditions_file_reaches_agent(self):
+        conditions = self.root / 'conditions.json'
+        conditions.write_text('{"sandbox":"workspace-write","network_access":false}')
+        process = subprocess.run([sys.executable, str(SCRIPTS / 'benchmark_runner.py'), str(self.output),
+            '--output', str(self.run_dir), '--model', 'test-model', '--executable', str(self.executable),
+            '--conditions', str(conditions)], capture_output=True, text=True)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        result = json.loads((self.run_dir / 'result.json').read_text())
+        self.assertIn('sandbox_workspace_write.network_access=false', result['command'])
+        self.assertFalse(result['configuration']['execution_conditions']['submitted']['network_access'])

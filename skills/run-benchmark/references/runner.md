@@ -40,16 +40,60 @@ The input files are outside the task repository, so they do not pollute its star
 tree or diff. The invocation explains how references to `context/` resolve to those
 copied inputs. The submitted prompt is saved as `inputs/invocation.md`.
 
-The Codex adapter uses a workspace-write sandbox, no approval escalation, no tool
-network access, and no additional writable roots. Default `/tmp` and `$TMPDIR`
-write exceptions are disabled. It ignores personal config and marks the restored
-project untrusted so project-local Codex configuration cannot broaden the run.
-Hooks, apps, memory, multi-agent delegation, and web search are disabled through
-explicit configuration. Host-managed policy and global instructions can still
-apply; this is a separate Git workspace with agent-enforced permissions, not a
-container or a hermetic operating system. Dependencies and external services are
-not provisioned automatically. Tasks requiring unavailable permissions or services
-may fail, and those failures are preserved.
+### Execution conditions
+
+Use `--conditions /path/to/conditions.json` (or a `conditions` dictionary in
+`run_benchmark`) to select execution conditions. Omitting the file or a key means
+inherit the agent/environment setting; the Runner does not inject policy defaults.
+For example, this deliberately selected configuration enables network access:
+
+```json
+{
+  "sandbox": "workspace-write",
+  "network_access": true,
+  "approval_policy": "never",
+  "web_search": "live"
+}
+```
+
+Supported Codex conditions:
+
+| Key | Values |
+| --- | --- |
+| `sandbox` | `read-only`, `workspace-write`, `danger-full-access` |
+| `network_access`, `exclude_slash_tmp`, `exclude_tmpdir_env_var` | Boolean; require explicit `sandbox: workspace-write`. |
+| `writable_roots` | List of absolute paths; requires explicit `sandbox: workspace-write`. |
+| `approval_policy` | `never`, `on-request` |
+| `approvals_reviewer` | `user`, `auto_review` |
+| `web_search` | `disabled`, `cached`, `live` |
+| `project_trust` | `trusted`, `untrusted` for the restored workspace path. |
+| `ignore_user_config`, `ephemeral` | Boolean CLI switches; false leaves the switch absent. |
+| `features` | Object with boolean `apps`, `hooks`, `memories`, `multi_agent` entries. |
+
+Unknown keys, invalid values, and contradictory workspace settings fail before
+restoration. Workspace-specific conditions require an explicit matching sandbox
+so they cannot silently become irrelevant under an inherited sandbox mode.
+Conditions are translated to explicit Codex CLI/config overrides. Other settings,
+including provider selection, inherit Codex configuration. Personal configuration
+is loaded unless explicitly disabled; project configuration depends on Codex trust
+and configuration rules. Host-managed policy still takes precedence. The Runner
+cannot determine every inherited or effective value. CLI rejections remain failed
+runs with diagnostics, without fallback. Interactive approval support depends on
+the agent's non-interactive interface; the Runner does not answer approval prompts.
+
+Result schema v2 records `configuration.execution_conditions.requested`, the
+supported keys, and `submitted` (null until agent launch succeeds). Submitted
+means passed to the process, not accepted or enforced. `effective` remains null
+and `verification` is `unverified`; compare explicit conditions and account for
+unverified inherited settings when comparing results. Version 1 results used a
+fixed policy summary and must not be interpreted as verified enforcement.
+
+Restoration and artifact collection stay in a separate workspace. This is not a
+container or a hermetic environment; an agent granted broader permissions can
+write outside it. Dependencies and external services are not provisioned
+by the Runner. Git-routing variables are removed from the child environment to
+avoid accidentally directing operations to the source repository; other environment
+variables are inherited. The input prompt is preserved for inspection.
 
 The runner does not bypass the agent's sandbox and does not automatically retry a
 run, redeem a usage reset, purchase allowance, or switch models/providers. The CLI
@@ -58,7 +102,7 @@ run. Programmatic adapters are trusted integrations responsible for enforcing th
 own tool permissions. Merely choosing a working directory does not sandbox a
 custom adapter.
 
-## Result directory and schema v1
+## Result directory and schema v2
 
 ```text
 my-run/
@@ -164,9 +208,9 @@ result = run_benchmark(
 )
 ```
 
-An adapter has `name` and `provider` attributes. It can declare a `policy`
-dictionary with `sandbox`, `network_access`, and `approval_policy`; absent declarations
-are recorded as `null`, never assumed to enforce Codex's permissions. It implements:
+An adapter has `name` and `provider` attributes. It may expose `supported_conditions` and `configure(conditions)` to validate and
+store execution settings. Without `configure`, nonempty conditions are rejected.
+It implements:
 
 - `version_command(executable)`: argument vector for a short version query.
 - `command(executable, workspace, model, effort)`: argument vector; the runner

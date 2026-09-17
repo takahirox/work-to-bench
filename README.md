@@ -140,8 +140,8 @@ Save the results to /path/to/benchmarks/runs/my-task-001.
 The run destination must be new, outside existing Git working trees, and outside
 the case directory. Choose a different destination for each run. The runner uses
 your existing Codex CLI authentication, and each run consumes the selected agent's
-allowance. It does not install project dependencies automatically; tool network
-access and approval escalation are disabled during the run.
+allowance. It does not install project dependencies automatically. Execution
+conditions are user-selected; omitted settings inherit the agent/environment defaults.
 
 Inspect these paths under `/path/to/benchmarks/runs/my-task-001/`:
 
@@ -223,9 +223,21 @@ python3 skills/run-benchmark/scripts/benchmark_runner.py /path/to/cases/my-task 
 
 Running requires macOS or Linux and an authenticated Codex CLI (tested with
 0.154.0), in addition to the extraction requirements above. Each run consumes the
-selected agent's allowance. The Codex adapter restricts tool writes to its workspace
-and disables tool network access and approval escalation. It does not install
-project dependencies automatically.
+selected agent's allowance. The Runner does not impose a sandbox, network policy,
+or approval policy. It does not install project dependencies automatically.
+
+Pass `--conditions /path/to/conditions.json` to choose execution conditions. For
+example, `{"sandbox":"workspace-write","network_access":true,"approval_policy":"never"}`
+explicitly enables tool networking in a workspace-write sandbox. With no conditions,
+Codex inherits its own configuration and host policy. In a Skill invocation, specify
+the conditions file alongside the case, model, and destination. Unknown or incompatible
+conditions are rejected; the Runner never retries with changed permissions.
+
+Results record requested and submitted conditions separately from effective
+conditions, which remain unknown when they cannot be verified. See the
+[execution conditions guide](skills/run-benchmark/references/runner.md#execution-conditions)
+for supported keys, configuration precedence, and result schema v2. Broader write
+permissions can allow the agent to modify files outside the restored workspace.
 
 Inspect `result.json` and `workspace/` in the output directory. Failed, interrupted,
 and timed-out runs retain partial results. Missing token/cost metrics are represented
