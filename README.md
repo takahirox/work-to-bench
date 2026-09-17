@@ -15,7 +15,7 @@ when a piece of work is worth reproducing or comparing.
 1. **Work normally** with an AI agent.
 2. **Extract an interesting task** into a benchmark case containing a reproducible
    Git starting snapshot, a self-contained task prompt, and any required context.
-3. **Run the case** in an isolated environment with different agents, models, or
+3. **Run the case** in a separate working directory with different agents, models, or
    configurations, such as reasoning/effort settings where supported.
 4. **Capture outputs and execution metrics**, including repository changes, logs,
    elapsed time, and token usage and cost where available.
@@ -32,12 +32,166 @@ of instructions for an AI agent) and supporting tools:
   conversation. It identifies the Git starting state and accounts for relevant
   uncommitted changes without disturbing normal development history or work.
 - **Benchmark execution** consumes that case, recreates its starting state in an
-  isolated environment, runs a selected agent configuration, and preserves
+  separate working directory, runs a selected agent configuration, and preserves
   artifacts and available metrics for comparison. A runner with agent/provider
   adapters handles execution and measurement behind the user-facing Skill.
 
 Keeping these responsibilities separate is intended to make cases portable across
 agents and model families, while allowing the case format and runner to evolve.
+
+## What work-to-bench handles
+
+A case is a reusable task and its starting repository state. A run is one attempt
+at that task by a selected agent. Start with an ordinary development conversation;
+you do not need to invent a new project setup or test workflow to extract it.
+
+| Participant | Responsibility |
+| --- | --- |
+| You, with your assisting agent | Choose the task boundary, prerequisites, inputs, execution conditions, and acceptance criteria. Review whether the extracted case faithfully represents the task. |
+| Extraction Skill | Reconstruct a self-contained task from the available conversation, select the pre-task Git state, package explicit inputs, and validate the case. |
+| Runner Skill | Select the requested case and agent configuration, invoke the Runner, and explain the saved results. |
+| Runner | Validate and restore the case, launch the agent, manage timeouts, and preserve code changes, logs, timing, and available usage metrics. |
+| Task agent | Perform the instructions in the case, including setup and project tests when those are part of the task. |
+| You or a separate evaluator | Judge correctness using the project's tests and other acceptance checks; compare runs under comparable conditions. |
+
+### Repository state is not the runtime environment
+
+The case packages the selected Git snapshot and reachable history, supported
+recursive submodules and Git LFS objects, the task prompt, and explicitly supplied
+context files. Prerequisite changes can be included through reviewed patches.
+Current dirty files, ignored files, and untracked files are not automatically
+captured. See the [case format guide](skills/extract-benchmark-case/references/case-format.md).
+
+It does not copy your whole machine: installed tools, dependency directories,
+running databases, browser/GPU state, credentials, and external datasets or
+services are not automatically reproduced. A dependency lockfile can travel with
+the code; the installed dependencies and access to their registry do not.
+Extra context files are inputs, not automatically installed runtime assets.
+During a run they live in `inputs/context/`, outside `workspace/`; the invocation
+explains how task references to `context/<filename>` resolve.
+
+The restored workspace separates the code from the source checkout. It is not
+an automatically provisioned container or a guarantee of filesystem/network
+isolation. Access depends on the selected agent, execution conditions, and host
+policy; an agent with broad write permissions can modify files outside it.
+
+### Decide where preparation belongs
+
+Reuse the project's existing setup and test instructions. Before extracting a
+case, identify the required tool versions, dependencies, services, and input data,
+and choose what the task starts with:
+
+- **Prepared environment:** if you want to measure implementation work alone,
+  arrange the required runtime tools, accessible dependencies, data, and services
+  before launching the Runner, using your own environment setup. Document their
+  versions and locations in the case so the task agent knows what is available.
+- **Setup as part of the task:** include the existing installation/bootstrap
+  commands in the task prompt. The task agent runs them in its restored workspace;
+  their time and agent usage are part of the run. Make tools needed to execute
+  those commands available beforehand.
+
+The Runner creates a new workspace on each run. Installing dependencies only in
+the original checkout does not prepare that workspace. There is no built-in
+pre-agent setup hook or dependency provisioner; use externally available resources,
+a user-supplied wrapper, or task instructions appropriate to the benchmark.
+Wrapper setup is included in the launched process's execution time.
+
+Before running, make external data and services accessible from the execution
+host. For portable file inputs, explicitly package each required regular file as
+context and explain how the agent should consume or copy it. For resources that
+stay external, document their version/identity and access requirements. Keep
+credentials in the execution environment rather than the case. Confirm that the
+chosen [execution conditions](#select-execution-conditions) permit necessary
+network access and writes. A missing prerequisite is an environment problem to
+report, not evidence that the agent solved or failed the intended coding task.
+
+### Tests and evaluation answer different questions
+
+Tell the task agent which existing test commands to run and what counts as success.
+The Runner does not automatically discover or execute those tests itself. Project
+tests can establish specific properties; rendering checks may also require a
+browser and reference images, and performance checks may require a defined workload,
+hardware, and threshold. State those criteria when they matter to the task.
+
+`result.json` reports execution status and metrics, not a correctness score. A
+`completed` run can contain an incorrect solution or failing tests. Review the
+actual changes and test evidence, and reproduce checks in the preserved workspace
+when needed. The Runner retains agent logs and workspace files, but does not
+create a structured project-test report or automatic visual/performance score.
+Keep the task, prerequisites, checks, and execution conditions comparable when
+comparing agents; unverified effective settings remain a limitation of the comparison.
+
+## Example: reuse an existing project's workflow
+
+Suppose you fixed a CSV import bug with an agent in a JavaScript project. At the
+pre-task commit, the project already has `docs/development.md`, a dependency
+lockfile, and an `npm test` command. Its setup instructions use `npm ci`. These
+names are illustrative: use your project's actual commands and versions.
+
+1. **You and the assisting agent define the start.** Identify the commit before
+   the fix and confirm it contains the setup/test instructions. Identify any
+   uncommitted prerequisites separately from the completed solution. Assume this
+   example requires no prerequisite patch. Choose to include dependency installation
+   in the task, while providing the Node/npm versions required by the project on
+   the execution host. Select a small failing input, `sample.csv`, and establish
+   its expected result from the original requirements.
+2. **You invoke the extraction Skill in the original work conversation.** After
+   [installing the Skills](#install-the-skills-in-codex), substitute actual paths
+   and the pre-task commit in this request:
+
+   ```text
+   $extract-benchmark-case Capture the CSV import bug fix we just worked on.
+   Use <pre-task-commit> as the base and csv-import as the case ID.
+   Include /path/to/inputs/sample.csv as context/sample.csv.
+   Preserve the expected import behavior from our agreed requirements.
+   In the task, reference docs/development.md for the required Node/npm versions,
+   run npm ci, fix the bug, add a regression test using context/sample.csv,
+   and run npm test. Use a workspace-local npm cache at .npm-cache for installation
+   and testing (set npm_config_cache to that directory). Record the test results
+   and any setup failures.
+   Save and validate the case at /path/to/benchmarks/cases/csv-import.
+   Exclude the completed fix and its solution-specific explanation.
+   ```
+
+3. **The extraction Skill packages; you review.** Inspect `prompt.md` for the
+   actual bug description, expected output, setup commands, and validation criteria.
+   Confirm the starting snapshot predates the solution. Use the
+   [restore command](#extract-a-benchmark-case) to inspect it in a separate new
+   directory if needed. Mechanical case validation checks packaging integrity,
+   not task completeness or whether a solution leaked into the inputs.
+4. **You prepare the host and select conditions.** Ensure the specified Node/npm
+   versions and authenticated agent are available. For this example, allow the
+   registry access needed by `npm ci`. The task uses a workspace-local npm cache
+   because the selected sandbox may not allow writes to the usual home-directory
+   cache. Verify any other project-specific write requirements as well. For Codex,
+   save the following as
+   `/path/to/conditions.json`; it is an explicit choice for this run, not a default:
+
+   ```json
+   {"sandbox":"workspace-write","network_access":true,"approval_policy":"never"}
+   ```
+
+5. **You invoke the Runner Skill; the Runner launches the task agent.** Choose an
+   available model in place of `YOUR_MODEL`, with a supported effort setting:
+
+   ```text
+   $run-benchmark Run /path/to/benchmarks/cases/csv-import once with Codex.
+   Use model YOUR_MODEL, reasoning effort medium, and /path/to/conditions.json.
+   Save results to /path/to/benchmarks/runs/csv-import-001.
+   ```
+
+   The Runner restores the code and supplies the prompt/context. The task agent
+   performs `npm ci`, the implementation, and `npm test`. For another agent, use
+   the [external-agent configuration](#run-another-ai-agent); its wrapper must
+   implement any requested conditions it declares support for. Case and run output
+   directories must be new; keep both outside your source repository, and runs
+   outside all existing Git working trees and the case directory.
+6. **You or your evaluator inspect the outcome.** Check `result.json`, the agent
+   logs, the diff, the new regression test, and the preserved workspace. Check
+   that the expected import behavior is tested and that tests actually ran and
+   passed. If installation failed, record that separately from correctness of the
+   proposed fix. Apply any additional project-specific checks before calling the
+   solution correct; choose a new run directory for the next comparison.
 
 ## Install the Skills in Codex
 
