@@ -24,7 +24,8 @@ when a piece of work is worth reproducing or comparing.
 
 ## Extraction and execution
 
-The project plans two separate, reusable Skills with supporting tools:
+The project plans two separate, reusable Skills (sets of instructions for an AI
+agent) with supporting tools:
 
 - **Benchmark-case extraction** reconstructs the task from relevant work and
   conversation, producing a self-contained prompt rather than a replay of the
@@ -40,9 +41,9 @@ agents and model families, while allowing the case format and runner to evolve.
 
 ## Status and design
 
-This project is at an early design stage. The extraction Skills, benchmark runner,
-and case format are not implemented yet; the workflow above describes the intended
-direction.
+This project is at an early design stage. The Skills and benchmark runner are not
+implemented yet, and the case format is not defined. The workflow above describes
+the intended direction.
 
 See the following issues for the project goals and planned implementation:
 
