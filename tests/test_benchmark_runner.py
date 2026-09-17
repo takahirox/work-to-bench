@@ -314,7 +314,8 @@ print(json.dumps({'type':'turn.completed','usage':usage}),flush=True)
     def test_invalid_conditions_fail_before_creating_output(self):
         for value in ({'network_access': True}, {'sandbox': 'read-only', 'network_access': True},
                       {'typo': True}, {'features': {'typo': False}},
-                      {'ignore_user_config': 1}, {'writable_roots': ['relative']}, []):
+                      {'ignore_user_config': 1}, {'writable_roots': ['relative']},
+                      {'sandbox': 'workspace-write', 'writable_roots': ['/bad\x00path']}, []):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.run_case(conditions=value)
             self.assertFalse(self.run_dir.exists())
@@ -332,3 +333,14 @@ print(json.dumps({'type':'turn.completed','usage':usage}),flush=True)
         with patch.dict(os.environ, BENCH_TEST_MODE='versionfail'):
             result = self.run_case(conditions={'web_search':'disabled'})
         self.assertIsNone(result['configuration']['execution_conditions']['submitted'])
+
+    def test_cli_conditions_file_reaches_agent(self):
+        conditions = self.root / 'conditions.json'
+        conditions.write_text('{"sandbox":"workspace-write","network_access":false}')
+        process = subprocess.run([sys.executable, str(SCRIPTS / 'benchmark_runner.py'), str(self.output),
+            '--output', str(self.run_dir), '--model', 'test-model', '--executable', str(self.executable),
+            '--conditions', str(conditions)], capture_output=True, text=True)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        result = json.loads((self.run_dir / 'result.json').read_text())
+        self.assertIn('sandbox_workspace_write.network_access=false', result['command'])
+        self.assertFalse(result['configuration']['execution_conditions']['submitted']['network_access'])

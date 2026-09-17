@@ -50,7 +50,7 @@ def codex_conditions(value):
         if key in BOOLS and type(value) is not bool:
             raise ValueError('Execution condition must be boolean: ' + key)
         if key == 'writable_roots':
-            if not isinstance(value, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in value):
+            if not isinstance(value, list) or not all(isinstance(p, str) and '\x00' not in p and Path(p).is_absolute() for p in value):
                 raise ValueError('writable_roots must be a list of absolute paths')
         if key == 'features':
             if not isinstance(value, dict) or any(k not in FEATURES or type(v) is not bool for k, v in value.items()):
