@@ -22,9 +22,10 @@ python3 skills/extract-benchmark-case/scripts/benchmark_case.py create \
 ```
 
 `--base` accepts a commit or revision resolving to a commit; the case records the
-full resolved ID. `--source` is a descriptive, credential-free repository identity
-(URL or name), not an executable clone instruction. The helper never discovers or
-copies a remote URL automatically. Output must be a new directory outside the
+full resolved ID. The root base commit must already be available locally.
+`--source` is a descriptive, credential-free repository identity (URL or name),
+not an executable clone instruction. The helper does not populate this identity
+from configured remote URLs. Output must be a new directory outside the
 source working tree. Existing output, including empty directories, is rejected.
 
 To include prerequisite changes that are not in the base commit, add
@@ -69,8 +70,8 @@ LFS sharded layout and flat files named by object ID are accepted. This also let
 you supply objects introduced by a prerequisite patch. Object sizes and hashes
 must match their pointers. Shared objects are stored only once per case.
 
-Creation defaults to local data. `--fetch-missing` permits retrieving missing Git
-commits, submodule repositories, and LFS objects into temporary storage. Submodule
+Creation defaults to local data. `--fetch-missing` permits retrieving missing
+submodule commits, submodule repositories, and LFS objects into temporary storage. Submodule
 URLs come from the selected `.gitmodules`; relative URLs resolve against the
 parent's `origin` URL (or its local path when there is no origin). LFS uses origin
 and repository-local LFS endpoint configuration. Retrieval requires working remote
@@ -182,8 +183,9 @@ Hashes detect accidental changes; they are not signatures or authenticity proofs
   are rejected explicitly; standard LFS pointers and payloads are supported.
 - Empty repositories need a real starting commit before extraction.
 - The source history must be locally available. Missing objects or incomplete
-  shallow history may prevent creation; fetch the needed history separately. `--fetch-missing` can retrieve missing
-  commits from origin, but does not repair an incomplete shallow history.
+  shallow history may prevent creation; fetch the needed history separately.
+  `--fetch-missing` can retrieve missing submodule commits from origin, but does
+  not repair an incomplete shallow history.
 - Additional context consists of regular files, not directories or symbolic links.
 - Git snapshots preserve tracked content, symlinks and executable bits, not arbitrary
   filesystem metadata, external services, dependencies, or environment state.

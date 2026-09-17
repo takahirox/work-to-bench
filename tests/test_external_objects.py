@@ -66,8 +66,8 @@ class ExternalObjectTests(unittest.TestCase):
         grand = self.new_repo('grand')
         oid, content = self.add_lfs(grand)
         child = self.new_repo('child')
-        nested = self.add_module(child, grand, 'nested')
-        child_local = self.add_module(self.repo, child, 'vendor/lib')
+        self.add_module(child, grand, 'nested')
+        self.add_module(self.repo, child, 'vendor/lib')
         case.git(self.repo, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive')
         # LFS cache does not travel with an ordinary Git clone; explicitly supply it.
         self.args.lfs_object_dir = [str(content.parents[2])]
@@ -79,7 +79,7 @@ class ExternalObjectTests(unittest.TestCase):
         grand.rename(self.root / 'grand-unavailable')
         target = self.root / 'restored'
         case.restore(self.output, target)
-        self.assertEqual((target / 'vendor/lib/nested/asset.bin').read_bytes(), content.read_bytes() if content.exists() else b'large binary\x00payload')
+        self.assertEqual((target / 'vendor/lib/nested/asset.bin').read_bytes(), b'large binary\x00payload')
         for repo in (target, target / 'vendor/lib', target / 'vendor/lib/nested'):
             self.assertEqual(case.git(repo, 'status', '--porcelain'), b'')
 
@@ -99,9 +99,12 @@ class ExternalObjectTests(unittest.TestCase):
         self.args.submodule_patch = ['vendor/nested=' + str(patch)]
         before = self.state()
         nested_before = case.git(nested, 'diff', '--binary', 'HEAD')
+        nested_index = Path(os.fsdecode(case.git(nested, 'rev-parse', '--git-path', 'index')).rstrip('\n'))
+        index_before = nested_index.read_bytes()
         meta = case.create(self.args)
         self.assertEqual(before, self.state())
         self.assertEqual(nested_before, case.git(nested, 'diff', '--binary', 'HEAD'))
+        self.assertEqual(nested_index.read_bytes(), index_before)
         for record in case.repository_records(meta):
             self.assertNotEqual(record['base_commit'], record['start_commit'])
         target = self.root / 'restored'
@@ -141,7 +144,7 @@ class ExternalObjectTests(unittest.TestCase):
         remote_content.parent.mkdir(parents=True)
         shutil.copyfile(content, remote_content)
         content.unlink()
-        case.git(self.repo, 'config', 'remote.origin.url', str(remote))
+        case.git(self.repo, 'config', 'remote.origin.url', '../remote')
         self.args.base, self.args.fetch_missing = 'HEAD', True
         before = self.state()
         case.create(self.args)
@@ -215,3 +218,84 @@ class ExternalObjectTests(unittest.TestCase):
                          'https://example.org/org/child.git')
         self.assertEqual(case.resolve_module_url('../child.git', 'git@example.org:org/parent.git'),
                          'git@example.org:org/child.git')
+
+    def test_missing_submodule_commit_is_fetched_without_updating_source_objects(self):
+        child = self.new_repo('child')
+        local = self.add_module(self.repo, child, 'vendor')
+        (child / 'input.txt').write_text('new prerequisite commit\n')
+        case.git(child, 'commit', '-am', 'New prerequisite')
+        new = case.git(child, 'rev-parse', 'HEAD').decode().strip()
+        case.git(self.repo, 'update-index', '--cacheinfo', '160000', new, 'vendor')
+        case.git(self.repo, 'commit', '-m', 'Advance gitlink')
+        self.args.base = 'HEAD'
+        with self.assertRaisesRegex(case.CaseError, 'Missing repository commit'):
+            case.create(self.args)
+        self.args.fetch_missing = True
+        before = self.state()
+        case.create(self.args)
+        self.assertEqual(before, self.state())
+        with self.assertRaises(case.CaseError):
+            case.git(local, 'cat-file', '-e', new)
+        case.restore(self.output, self.root / 'restored')
+        self.assertEqual((self.root / 'restored/vendor/input.txt').read_text(), 'new prerequisite commit\n')
+
+    def test_custom_lfs_cache_and_extra_payloads(self):
+        oid, content = self.add_lfs(self.repo)
+        common = self.repo / '.git'
+        (common / 'lfs').rename(common / 'my-cache')
+        case.git(self.repo, 'config', 'lfs.storage', 'my-cache')
+        self.args.base = 'HEAD'
+        case.create(self.args)
+        self.assertTrue((self.output / 'lfs' / oid).exists())
+        shutil.rmtree(self.output)
+        new_cache = self.root / 'extra-cache'
+        new_cache.mkdir()
+        shutil.copyfile(case.lfs_object(common / 'my-cache/objects', oid), new_cache / oid)
+        shutil.rmtree(common / 'my-cache')
+        self.args.lfs_object_dir = [str(new_cache)]
+        case.create(self.args)
+        self.assertTrue((self.output / 'lfs' / oid).exists())
+
+    def test_cli_restores_lfs(self):
+        data = b'CLI LFS contents'
+        self.add_lfs(self.repo, data)
+        self.args.base = 'HEAD'
+        case.create(self.args)
+        target = self.root / 'restored'
+        result = subprocess.run(['python3', str(support.SCRIPT), 'restore', str(self.output),
+                                 '--output', str(target)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)['valid'])
+        self.assertEqual((target / 'asset.bin').read_bytes(), data)
+
+    def test_relative_url_download_and_nested_lfs(self):
+        grand = self.new_repo('grand')
+        oid, _ = self.add_lfs(grand)
+        child = self.new_repo('child')
+        self.add_module(child, grand, 'nested')
+        case.git(child, 'config', '-f', '.gitmodules', 'submodule.nested.url', '../grand')
+        case.git(child, 'commit', '-am', 'Relative URL')
+        self.add_module(self.repo, child, 'vendor')
+        case.git(self.repo, 'config', '-f', '.gitmodules', 'submodule.vendor.url', '../child')
+        case.git(self.repo, 'commit', '-am', 'Relative URL')
+        case.git(self.repo, 'submodule', 'deinit', '-f', '--all')
+        shutil.rmtree(self.repo / '.git/modules')
+        self.args.base, self.args.fetch_missing = 'HEAD', True
+        meta = case.create(self.args)
+        self.assertEqual(len(meta['submodules']), 2)
+        self.assertTrue((self.output / 'lfs' / oid).exists())
+
+    def test_lfs_records_cannot_be_omitted_or_redirected(self):
+        oid, _ = self.add_lfs(self.repo)
+        self.args.base = 'HEAD'
+        meta = case.create(self.args)
+        original = json.loads(json.dumps(meta))
+        meta['repository']['lfs'] = []
+        del meta['sha256']['lfs/' + oid]
+        self.manifest(meta)
+        with self.assertRaisesRegex(case.CaseError, 'starting tree'):
+            case.validate(self.output)
+        original['repository']['lfs'][0]['path'] = '../outside'
+        self.manifest(original)
+        with self.assertRaisesRegex(case.CaseError, 'Unsafe'):
+            case.validate(self.output)

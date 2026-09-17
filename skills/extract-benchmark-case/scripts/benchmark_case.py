@@ -39,7 +39,10 @@ def git(repo, *args, data=None, optional=False):
         return None
     if result.returncode:
         # Do not echo host paths, remote URLs or patch content from Git errors.
-        raise CaseError('Git operation failed: ' + args[0])
+        command = 0
+        while args[command] == '-c':
+            command += 2
+        raise CaseError('Git operation failed: ' + args[command])
     return result.stdout
 
 
@@ -144,6 +147,17 @@ def module_config(repo, commit):
     return result
 
 
+def local_url(value, source):
+    """Keep network URLs intact and anchor relative local URLs before changing cwd."""
+    if not value or ':' in value:
+        return value
+    return str((source / value).resolve())
+
+
+def origin_url(source):
+    return local_url(config(source, 'remote.origin.url'), source)
+
+
 def resolve_module_url(url, parent):
     if not url or not url.startswith(('./', '../')):
         return url
@@ -197,7 +211,7 @@ def collect_lfs(source, snapshot, start, pointers, output, args):
     if not pointers:
         return
     roots = [Path(p).resolve() for p in getattr(args, 'lfs_object_dir', [])] + lfs_roots(source) + [snapshot / 'lfs/objects']
-    remote = config(source, 'remote.origin.url')
+    remote = origin_url(source)
     for item in pointers:
         oid = item['oid']
         destination = output / 'lfs' / oid
@@ -238,7 +252,7 @@ def snapshot_repository(source, base, path, output, args, patches, sources, used
         try:
             git(snapshot, 'fetch', '--no-tags', '--', str(source), base)
         except CaseError:
-            remote = config(source, 'remote.origin.url')
+            remote = origin_url(source)
             if not getattr(args, 'fetch_missing', False) or not remote:
                 raise CaseError('Missing repository commit; fetch it first or use --fetch-missing')
             git(snapshot, 'fetch', '--no-tags', '--', remote, base)
@@ -268,7 +282,7 @@ def snapshot_repository(source, base, path, output, args, patches, sources, used
             if child_source is None:
                 if not getattr(args, 'fetch_missing', False):
                     raise CaseError('Missing submodule ' + full_path + '; provide --submodule-source or use --fetch-missing')
-                remote = resolve_module_url(url, config(source, 'remote.origin.url') or str(source))
+                remote = local_url(resolve_module_url(url, origin_url(source) or str(source)), source)
                 if not remote:
                     raise CaseError('Missing submodule URL for ' + full_path)
                 child_source = snapshot / ('download-' + hashlib.sha256(os.fsencode(full_path)).hexdigest())
@@ -487,7 +501,10 @@ def restore(directory, output):
         raise CaseError('Restore output already exists')
     meta = validate(directory)
     if any(record.get('lfs') for record in repository_records(meta)):
-        git(directory, 'lfs', 'version')
+        try:
+            git(directory, 'lfs', 'version')
+        except CaseError as exc:
+            raise CaseError('Restoring LFS content requires Git LFS; install it and retry') from exc
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir()
     try:
