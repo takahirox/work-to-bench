@@ -24,14 +24,14 @@ when a piece of work is worth reproducing or comparing.
 
 ## Extraction and execution
 
-The project plans two separate, reusable Skills (sets of instructions for an AI
-agent) with supporting tools:
+The project separates two responsibilities, exposed through reusable Skills (sets
+of instructions for an AI agent) and supporting tools:
 
 - **Benchmark-case extraction** reconstructs the task from relevant work and
   conversation, producing a self-contained prompt rather than a replay of the
   conversation. It identifies the Git starting state and accounts for relevant
   uncommitted changes without disturbing normal development history or work.
-- **Benchmark execution** consumes that case, recreates its starting state in an
+- **Benchmark execution (planned)** consumes that case, recreates its starting state in an
   isolated environment, runs a selected agent configuration, and preserves
   artifacts and available metrics for comparison. A runner with agent/provider
   adapters will handle execution and measurement behind the user-facing Skill.

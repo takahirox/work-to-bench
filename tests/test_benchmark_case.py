@@ -161,9 +161,62 @@ class CaseTests(unittest.TestCase):
                                  '--prompt', str(self.prompt), '--output', str(self.output)],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
         self.assertTrue(json.loads(result.stdout)['valid'])
         result = subprocess.run(['python3', str(SCRIPT), 'validate', str(self.output)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_sha256_repository(self):
+        repo = self.root / 'sha256-source'
+        repo.mkdir()
+        case.git(repo, 'init', '--object-format=sha256')
+        (repo / 'input').write_text('sha256 input')
+        case.git(repo, 'add', '.')
+        case.git(repo, 'commit', '-m', 'SHA-256 base')
+        self.args.repo, self.args.base = str(repo), 'HEAD'
+        meta = case.create(self.args)
+        self.assertEqual(meta['repository']['object_format'], 'sha256')
+        self.assertEqual(len(meta['repository']['start_commit']), 64)
+        self.assertEqual(case.validate(self.output), meta)
+
+    def test_linked_worktree_preserves_index_and_branch(self):
+        linked = self.root / 'linked'
+        case.git(self.repo, 'worktree', 'add', '-b', 'linked-task', str(linked), self.base)
+        (linked / 'task.txt').write_text('worktree staged solution')
+        case.git(linked, 'add', '.')
+        before = case.git(linked, 'status', '--porcelain=v1')
+        index = Path(os.fsdecode(case.git(linked, 'rev-parse', '--git-path', 'index')).strip())
+        index_before = index.read_bytes()
+        self.args.repo = str(linked)
+        meta = case.create(self.args)
+        self.assertEqual(case.git(linked, 'status', '--porcelain=v1'), before)
+        self.assertEqual(index.read_bytes(), index_before)
+        self.assertEqual(case.git(linked, 'branch', '--show-current').strip(), b'linked-task')
+        self.assertEqual(meta['repository']['start_commit'], self.base)
+
+    def test_duplicate_context_filenames_are_rejected(self):
+        other = self.root / 'other'
+        other.mkdir()
+        (other / self.prompt.name).write_text('other input')
+        self.args.context = [str(self.prompt), str(other / self.prompt.name)]
+        with self.assertRaisesRegex(case.CaseError, 'unique'):
+            case.create(self.args)
+
+    def test_invalid_metadata_and_bundle_are_rejected(self):
+        meta = case.create(self.args)
+        original = json.dumps(meta)
+        for invalid in ([], {'schema_version': True}, dict(meta, context=[{}]),
+                        dict(meta, created_at='2026-01-01T00:00:00')):
+            with self.subTest(metadata=invalid):
+                (self.output / 'case.json').write_text(json.dumps(invalid))
+                with self.assertRaises(case.CaseError):
+                    case.validate(self.output)
+        (self.output / 'repository.bundle').write_bytes(b'corrupt bundle')
+        meta = json.loads(original)
+        meta['sha256']['repository.bundle'] = case.file_digest(self.output / 'repository.bundle')
+        (self.output / 'case.json').write_text(json.dumps(meta))
+        with self.assertRaises(case.CaseError):
+            case.validate(self.output)
 
 
 if __name__ == '__main__':

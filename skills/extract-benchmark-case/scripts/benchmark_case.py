@@ -41,8 +41,12 @@ def regular(path):
     return path.read_bytes()
 
 
-def digest(data):
-    return hashlib.sha256(data).hexdigest()
+def file_digest(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise CaseError('Case inputs must be regular files')
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def text_input(path):
@@ -57,16 +61,27 @@ def text_input(path):
 
 def check_tree(repo, commit):
     entries = git(repo, 'ls-tree', '-rz', commit).split(b'\0')
+    blobs = set()
     for entry in filter(None, entries):
         info, _ = entry.split(b'\t', 1)
         mode, kind, oid = info.split()
         if mode == b'160000':
             raise CaseError('Submodules are not supported in case format version 1')
         if kind == b'blob':
-            # Pointer files cannot restore their external LFS content from a bundle.
-            size = int(git(repo, 'cat-file', '-s', oid.decode()))
-            if size <= 1024:
-                blob = git(repo, 'cat-file', 'blob', oid.decode())
+            blobs.add(oid)
+    if blobs:
+        sizes = git(repo, 'cat-file', '--batch-check=%(objectname) %(objectsize)',
+                    data=b'\n'.join(sorted(blobs)) + b'\n')
+        small = [line.split()[0] for line in sizes.splitlines() if int(line.split()[1]) <= 1024]
+        if small:
+            contents = git(repo, 'cat-file', '--batch', data=b'\n'.join(small) + b'\n')
+            offset = 0
+            for _ in small:
+                end = contents.index(b'\n', offset)
+                size = int(contents[offset:end].split()[2])
+                blob = contents[end + 1:end + 1 + size]
+                offset = end + size + 2
+                # Pointer files cannot restore external LFS content from a bundle.
                 if blob.startswith(b'version https://git-lfs.github.com/spec/v1\n'):
                     raise CaseError('Git LFS pointers are not supported in version 1')
 
@@ -130,7 +145,7 @@ def create(args):
                            'bundle': 'repository.bundle', 'ref': ref},
             'prompt': 'prompt.md', 'context': files[2:],
             'extraction': {'tool': 'work-to-bench', 'patch_applied': patch is not None},
-            'sha256': {name: digest(regular(output / name)) for name in files},
+            'sha256': {name: file_digest(output / name) for name in files},
         }
         (output / 'case.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
         validate(output)
@@ -148,7 +163,9 @@ def validate(directory):
             raise CaseError('Unsupported schema version')
         if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', meta['id']):
             raise CaseError('Invalid case ID')
-        datetime.fromisoformat(meta['created_at'])
+        timestamp = datetime.fromisoformat(meta['created_at'])
+        if timestamp.utcoffset() is None or timestamp.utcoffset().total_seconds() != 0:
+            raise CaseError('Extraction timestamp must use UTC')
         repo = meta['repository']
         if not isinstance(repo['identity'], str) or not repo['identity'].strip():
             raise CaseError('Missing repository identity')
@@ -177,7 +194,7 @@ def validate(directory):
         if set(meta['sha256']) != set(files):
             raise CaseError('Hash manifest does not match case files')
         for name in files:
-            if digest(regular(directory / name)) != meta['sha256'][name]:
+            if file_digest(directory / name) != meta['sha256'][name]:
                 raise CaseError('Case file hash mismatch: ' + name)
         text_input(directory / 'prompt.md')
     except (KeyError, TypeError, ValueError) as exc:
