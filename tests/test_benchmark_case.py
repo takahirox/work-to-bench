@@ -138,16 +138,16 @@ class CaseTests(unittest.TestCase):
         with self.assertRaises(case.CaseError):
             case.create(self.args)
 
-    def test_submodule_is_rejected_without_modifying_source(self):
+    def test_missing_submodule_preserves_source(self):
         case.git(self.repo, 'update-index', '--add', '--cacheinfo', '160000,' + self.base + ',vendor')
         case.git(self.repo, 'commit', '-m', 'Submodule')
         self.args.base = 'HEAD'
         before = self.state()
-        with self.assertRaisesRegex(case.CaseError, 'Submodules'):
+        with self.assertRaisesRegex(case.CaseError, 'Missing submodule'):
             case.create(self.args)
         self.assertEqual(before, self.state())
 
-    def test_lfs_pointer_is_rejected(self):
+    def test_missing_lfs_object_is_rejected(self):
         (self.repo / 'large').write_text('version https://git-lfs.github.com/spec/v1\noid sha256:' + '0' * 64 + '\nsize 42\n')
         case.git(self.repo, 'add', '.')
         case.git(self.repo, 'commit', '-m', 'LFS pointer')

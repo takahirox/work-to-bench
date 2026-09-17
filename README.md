@@ -43,10 +43,12 @@ agents and model families, while allowing the case format and runner to evolve.
 
 The first implementation provides an explicitly invoked extraction Skill and a
 Python helper. It packages a task prompt, an exact Git starting snapshot in a
-self-contained bundle, and optional context files. The source repository's working
+self-contained bundle, recursive submodule bundles, Git LFS objects, and optional
+context files. The source repository's working
 tree, index, and branches are preserved, including uncommitted work.
 
-Requirements: Python 3.11+ and Git 2.43+. No additional Python packages are needed.
+Requirements: Python 3.11+ and Git 2.43+. Git LFS 3.x is needed to download missing
+LFS objects or restore LFS files. No additional Python packages are needed.
 
 To use the Skill in Codex, copy `skills/extract-benchmark-case` into your agent's
 Skill directory (for example, `~/.codex/skills/`), then start a session where the
@@ -77,7 +79,20 @@ python3 skills/extract-benchmark-case/scripts/benchmark_case.py create \
 Choose a new output directory outside the source repository. Only the selected
 commit is captured unless an explicit prerequisite patch is supplied; current
 dirty files are not captured automatically. Bundles include reachable Git history,
-so review the content before sharing. Git LFS and submodules are not supported yet.
+so review the content before sharing. Submodules (including nested ones) and LFS
+objects needed by the starting snapshot are included. Missing local data produces
+an actionable error; `--fetch-missing` allows downloading it into temporary storage.
+
+Restore a case, including its submodules and LFS content, without network access:
+
+```sh
+python3 skills/extract-benchmark-case/scripts/benchmark_case.py restore \
+  /path/to/cases/my-task --output /path/to/new-working-directory
+```
+
+The output must not already exist. Submodule prerequisites can be selected with
+`--submodule-patch path/to/module=/path/to/prerequisites.patch`; source worktrees
+and indexes are preserved throughout extraction.
 
 See the [Skill instructions](skills/extract-benchmark-case/SKILL.md) and
 [case format and CLI guide](skills/extract-benchmark-case/references/case-format.md)
@@ -91,8 +106,8 @@ python3 -m unittest discover -s tests -v
 
 ## Status and design
 
-This project is at an early stage. Extraction and version 1 of the case format are
-implemented. The benchmark runner, provider adapters, metrics collection, and
+This project is at an early stage. Extraction and version 2 of the case format are
+implemented; existing version 1 cases remain readable. The benchmark runner, provider adapters, metrics collection, and
 automated evaluation are not implemented yet. Human review determines whether an
 extracted candidate faithfully represents the original task.
 
