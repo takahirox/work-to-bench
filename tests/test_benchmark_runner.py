@@ -29,6 +29,8 @@ class RunnerTests(unittest.TestCase):
 import json,os,sys,time,subprocess
 from pathlib import Path
 if '--version' in sys.argv:
+ if os.environ.get('BENCH_TEST_MODE')=='versionfail':
+  print('version probe diagnostic',file=sys.stderr); sys.exit(2)
  print('codex-test 1.0'); sys.exit(0)
 assert sys.argv[sys.argv.index('--sandbox')+1] == 'workspace-write'
 assert '--ignore-user-config' in sys.argv
@@ -231,3 +233,55 @@ print(json.dumps({'type':'turn.completed','usage':usage}),flush=True)
             if process.poll() is None:
                 process.kill()
                 process.communicate()
+
+
+    def test_unfinished_final_turn_is_not_completed_or_full_usage(self):
+        events = self.root / 'unfinished.jsonl'
+        events.write_text('\n'.join(json.dumps(event) for event in (
+            {'type': 'turn.completed', 'usage': {'input_tokens': 10, 'output_tokens': 2}},
+            {'type': 'turn.started'})))
+        parsed = CodexAdapter().parse(events)
+        self.assertFalse(parsed['completed'])
+        self.assertIsNone(parsed['usage']['totals']['input_tokens'])
+        self.assertEqual(parsed['usage']['raw_turns'][0]['input_tokens'], 10)
+
+    def test_bad_adapter_response_still_finalizes(self):
+        class BrokenAdapter(CodexAdapter):
+            def parse(self, path):
+                return {'completed': True, 'usage': {}}
+        result = self.run_case(adapter=BrokenAdapter())
+        self.assertEqual(result['status'], 'agent_failed')
+        self.assertIsNone(result['usage']['totals']['input_tokens'])
+        self.assertTrue(result['timing']['finished_at'])
+        self.assertTrue(result['artifacts'])
+        self.assertEqual(json.loads((self.run_dir / 'result.json').read_text()), result)
+
+    def test_artifact_collection_failure_keeps_final_result(self):
+        with patch.object(runner, 'collect_artifacts', side_effect=OSError('test collection failure')):
+            result = self.run_case()
+        self.assertEqual(result['status'], 'artifact_failed')
+        self.assertTrue(result['timing']['finished_at'])
+        self.assertTrue((self.run_dir / 'workspace/new.bin').exists())
+        self.assertEqual(json.loads((self.run_dir / 'result.json').read_text()), result)
+
+    def test_custom_adapter_policy_and_reported_cost(self):
+        class CustomAdapter:
+            name = 'fixture-agent'
+            provider = 'fixture-provider'
+            version_command = CodexAdapter.version_command
+            command = CodexAdapter.command
+            def parse(self, path):
+                value = CodexAdapter().parse(path)
+                value['reported_cost_usd'] = '0.0123'
+                return value
+        result = self.run_case(adapter=CustomAdapter())
+        self.assertEqual(result['status'], 'completed')
+        self.assertIsNone(result['configuration']['sandbox'])
+        self.assertEqual(result['agent']['provider'], 'fixture-provider')
+        self.assertEqual(result['cost']['reported_usd'], '0.0123')
+
+    def test_version_failure_preserves_diagnostic(self):
+        with patch.dict(os.environ, BENCH_TEST_MODE='versionfail'):
+            result = self.run_case()
+        self.assertEqual(result['status'], 'runner_failed')
+        self.assertIn('version probe diagnostic', (self.run_dir / 'stderr.log').read_text())

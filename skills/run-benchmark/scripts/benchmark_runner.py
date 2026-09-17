@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from runner_adapters import ADAPTERS
+from runner_adapters import ADAPTERS, reject_constant
 
 
 class RunError(ValueError):
@@ -51,7 +51,7 @@ def pricing_table(path, model):
     if path is None:
         return None
     try:
-        value = json.loads(Path(path).read_text(encoding='utf-8'))
+        value = json.loads(Path(path).read_text(encoding='utf-8'), parse_constant=reject_constant)
         if value['model'] != model:
             raise RunError('Pricing model must match the requested model exactly')
         if not isinstance(value['source'], str) or not value['source'].strip():
@@ -69,7 +69,7 @@ def pricing_table(path, model):
 
 
 def estimate_cost(telemetry, rates, model):
-    result = {'reported_usd': None, 'estimated_usd': None, 'pricing': rates,
+    result = {'reported_usd': telemetry.get('reported_cost_usd'), 'estimated_usd': None, 'pricing': rates,
               'reason': 'pricing_not_supplied'}
     if rates is None:
         return result
@@ -88,6 +88,44 @@ def estimate_cost(telemetry, rates, model):
             + Decimal(usage['output_tokens']) * Decimal(str(rates['output_usd_per_million']))) / Decimal(1000000)
     result.update(estimated_usd=str(cost), reason='token_rate_estimate_not_a_bill')
     return result
+
+
+TOKEN_FIELDS = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
+
+
+def empty_telemetry():
+    return {'completed': False, 'reported_model': None,
+            'usage': {'totals': {key: None for key in TOKEN_FIELDS},
+                      'missing_fields': list(TOKEN_FIELDS), 'raw_turns': [], 'source': 'unavailable'},
+            'warnings': []}
+
+
+def checked_telemetry(value):
+    if type(value['completed']) is not bool or not isinstance(value['usage']['totals'], dict):
+        raise ValueError('Invalid adapter telemetry')
+    if value.get('reported_model') is not None and not isinstance(value['reported_model'], str):
+        raise ValueError('Invalid reported model')
+    if not isinstance(value.get('warnings', []), list) or not all(isinstance(w, str) for w in value.get('warnings', [])):
+        raise ValueError('Invalid adapter warnings')
+    if not isinstance(value['usage']['raw_turns'], list):
+        raise ValueError('Invalid raw usage')
+    for key in TOKEN_FIELDS:
+        count = value['usage']['totals'].get(key)
+        if count is not None and (type(count) is not int or count < 0):
+            raise ValueError('Invalid normalized token count')
+        value['usage']['totals'][key] = count
+    totals = value['usage']['totals']
+    if totals['input_tokens'] is not None and totals['cached_input_tokens'] is not None:
+        if totals['cached_input_tokens'] > totals['input_tokens']:
+            raise ValueError('Cached input exceeds total input')
+    if value.get('reported_cost_usd') is not None:
+        amount = Decimal(str(value['reported_cost_usd']))
+        if not amount.is_finite() or amount < 0:
+            raise ValueError('Invalid reported charge')
+        value['reported_cost_usd'] = str(amount)
+    # Reject non-serializable/non-finite provider fields before finalization.
+    json.dumps(value, allow_nan=False)
+    return value
 
 
 def stop_process(process):
@@ -157,7 +195,12 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
         if agent not in ADAPTERS:
             raise RunError('Unknown agent adapter')
         adapter = ADAPTERS[agent]()
+    policy = getattr(adapter, 'policy', {'sandbox': None, 'network_access': None, 'approval_policy': None})
+    if not isinstance(policy, dict):
+        raise RunError('Adapter policy must be a dictionary')
     rates = pricing_table(pricing, model)
+    if os.sep in str(executable):
+        executable = str(Path(executable).resolve())
     case = case_tools()
     case_directory = Path(case_directory).resolve()
     output = Path(output).absolute()
@@ -174,14 +217,14 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
     except (ValueError, OSError) as exc:
         raise RunError('Invalid benchmark case: ' + str(exc)) from exc
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.mkdir()
+    output.mkdir(mode=0o700)
     begin = time.monotonic()
     result = {
         'schema_version': 1, 'case_id': meta['id'], 'status': 'preparing',
         'agent': {'adapter': adapter.name, 'provider': adapter.provider, 'version': None,
                   'requested_model': model, 'reported_model': None, 'reasoning_effort': effort},
-        'configuration': {'timeout_seconds': timeout, 'sandbox': 'workspace-write',
-                          'network_access': False, 'approval_policy': 'never'},
+        'configuration': {'timeout_seconds': timeout,
+                          **policy},
         'starting_repositories': [{'path': r.get('path', '.'), 'commit': r['start_commit']}
                                   for r in case.repository_records(meta)],
         'timing': {'started_at': now(), 'finished_at': None, 'elapsed_seconds': None,
@@ -197,8 +240,7 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
     stderr.touch()
     process = None
     restored = False
-    telemetry = {'completed': False, 'reported_model': None,
-                 'usage': {'totals': {}, 'raw_turns': []}, 'warnings': []}
+    telemetry = empty_telemetry()
     agent_start = None
     try:
         inputs = output / 'inputs'
@@ -220,6 +262,8 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
         env = process_environment()
         version = subprocess.run(adapter.version_command(executable), stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True, env=env, cwd=workspace, timeout=15)
+        if version.stderr:
+            stderr.write_text(version.stderr, encoding='utf-8')
         if version.returncode:
             raise RunError('Unable to determine agent version')
         result['agent']['version'] = version.stdout.strip()[:200]
@@ -229,7 +273,7 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
         result['timing']['agent_started_at'] = now()
         write_json(output / 'result.json', result)
         agent_start = time.monotonic()
-        with (inputs / 'invocation.md').open('rb') as incoming, stdout.open('wb') as out, stderr.open('wb') as err:
+        with (inputs / 'invocation.md').open('rb') as incoming, stdout.open('wb') as out, stderr.open('ab') as err:
             process = subprocess.Popen(command, cwd=workspace, stdin=incoming, stdout=out, stderr=err,
                                        env=env, start_new_session=True)
             try:
@@ -240,9 +284,10 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
             finally:
                 stop_process(process)
                 result['exit_code'] = process.returncode
+                process = None
     except KeyboardInterrupt:
         result['status'] = 'interrupted'
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+    except Exception as exc:
         result['status'] = 'runner_failed'
         result['errors'].append(str(exc) if isinstance(exc, ValueError) else 'Agent launch or setup failed; check the executable and environment')
     finally:
@@ -253,19 +298,28 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
             result['timing']['agent_finished_at'] = now()
             result['timing']['agent_elapsed_seconds'] = time.monotonic() - agent_start
         try:
-            telemetry = adapter.parse(stdout)
+            telemetry = checked_telemetry(adapter.parse(stdout))
             result['agent']['reported_model'] = telemetry.get('reported_model')
             result['usage'] = telemetry['usage']
             result['warnings'].extend(telemetry.get('warnings', []))
             if result['status'] == 'completed' and not telemetry['completed']:
                 result['status'] = 'agent_failed'
-        except (OSError, ValueError, KeyError, TypeError):
+        except Exception:
             result['warnings'].append('Unable to parse agent telemetry; raw logs retained')
             if result['status'] == 'completed':
                 result['status'] = 'agent_failed'
-        result['cost'] = estimate_cost(telemetry, rates, model)
+        result['usage'] = telemetry['usage']
+        try:
+            result['cost'] = estimate_cost(telemetry, rates, model)
+        except (ValueError, KeyError, TypeError, InvalidOperation):
+            result['cost'] = {'reported_usd': None, 'estimated_usd': None, 'pricing': rates,
+                              'reason': 'cost_calculation_failed'}
+            result['warnings'].append('Unable to calculate cost; usage and pricing retained')
         if restored:
-            result['artifacts'], errors = collect_artifacts(output, meta, case)
+            try:
+                result['artifacts'], errors = collect_artifacts(output, meta, case)
+            except Exception:
+                errors = [{'message': 'Artifact summary collection failed; inspect the preserved workspace'}]
             result['errors'].extend(errors)
             if errors and result['status'] == 'completed':
                 result['status'] = 'artifact_failed'

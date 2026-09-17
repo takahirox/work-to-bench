@@ -79,7 +79,8 @@ my-run/
     <submodule-path-hash>/  # Same files for each starting submodule
 ```
 
-`result.json` is written before execution and atomically updated on completion.
+The run directory is created with owner-only permissions. `result.json` is written
+before execution and atomically updated on completion.
 Important fields:
 
 | Field | Meaning |
@@ -92,12 +93,12 @@ Important fields:
 | `timing` | UTC timestamps and monotonic elapsed seconds; `agent_*` fields isolate agent execution from setup and collection. |
 | `exit_code` | Agent process exit code, or `null` if it never started. |
 | `usage` | Normalized token totals, missing fields, original per-turn usage objects, and telemetry source. |
-| `cost` | Reported charge (currently unavailable), optional USD estimate, reason, and exact supplied pricing table. |
+| `cost` | Optional agent-reported USD charge, optional token-rate estimate, estimate availability reason, and exact supplied pricing table. Codex does not report a charge. |
 | `logs`, `workspace`, `inputs`, `artifacts` | Run-relative paths and per-repository start/final commits. |
 | `warnings`, `errors` | Telemetry gaps or setup/artifact failures. Raw agent details remain in the logs. |
 
 The runner reports `completed` only when the process exits successfully and the
-adapter observes a terminal success without a terminal failure or malformed event
+adapter observes a terminal success without a terminal failure, unfinished final turn, or malformed event
 stream. This is an execution outcome, not a correctness score.
 
 Tracked-file patches compare the original starting commit to the final working
@@ -163,13 +164,18 @@ result = run_benchmark(
 )
 ```
 
-An adapter has `name` and `provider` attributes and implements:
+An adapter has `name` and `provider` attributes. It can declare a `policy`
+dictionary with `sandbox`, `network_access`, and `approval_policy`; absent declarations
+are recorded as `null`, never assumed to enforce Codex's permissions. It implements:
 
 - `version_command(executable)`: argument vector for a short version query.
 - `command(executable, workspace, model, effort)`: argument vector; the runner
   provides the prompt on stdin, streams stdout/stderr to files, and owns lifecycle.
 - `parse(stdout_path)`: returns `completed`, `reported_model`, `warnings`, and
-  `usage` with normalized `totals` and original `raw_turns`.
+  `usage` with normalized `totals` and original `raw_turns`. An optional
+  `reported_cost_usd` field preserves an agent-reported charge as a decimal string.
+  Invalid adapter telemetry produces an explicit warning and unavailable metrics;
+  it does not prevent the final result and partial artifacts from being saved.
 
 Pass an adapter instance via `adapter=` for programmatic use or register its class
 in `runner_adapters.ADAPTERS` to expose it through the CLI. Generic lifecycle, case
