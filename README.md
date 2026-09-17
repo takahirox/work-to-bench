@@ -10,7 +10,7 @@ changes. Capturing those tasks should not require a rigid day-to-day development
 workflow. The idea is to work normally and explicitly extract a benchmark only
 when a piece of work is worth reproducing or comparing.
 
-## Planned workflow
+## Workflow
 
 1. **Work normally** with an AI agent.
 2. **Extract an interesting task** into a benchmark case containing a reproducible
@@ -31,10 +31,10 @@ of instructions for an AI agent) and supporting tools:
   conversation, producing a self-contained prompt rather than a replay of the
   conversation. It identifies the Git starting state and accounts for relevant
   uncommitted changes without disturbing normal development history or work.
-- **Benchmark execution (planned)** consumes that case, recreates its starting state in an
+- **Benchmark execution** consumes that case, recreates its starting state in an
   isolated environment, runs a selected agent configuration, and preserves
   artifacts and available metrics for comparison. A runner with agent/provider
-  adapters will handle execution and measurement behind the user-facing Skill.
+  adapters handles execution and measurement behind the user-facing Skill.
 
 Keeping these responsibilities separate is intended to make cases portable across
 agents and model families, while allowing the case format and runner to evolve.
@@ -104,12 +104,42 @@ Run the integration tests with:
 python3 -m unittest discover -s tests -v
 ```
 
+## Run a benchmark case
+
+The runner restores each case into a new workspace, runs a selected agent, and
+preserves the final repositories, diffs, untracked files, logs, timing, and available
+usage metrics. The first adapter supports Codex CLI. Install both Skill folders
+(`run-benchmark` and `extract-benchmark-case`) alongside each other to invoke
+`$run-benchmark`, or run the helper from this checkout:
+
+```sh
+python3 skills/run-benchmark/scripts/benchmark_runner.py /path/to/cases/my-task \
+  --output /path/to/runs/my-run \
+  --agent codex --model YOUR_MODEL --effort medium --timeout 1800
+```
+
+Running requires macOS or Linux and an authenticated Codex CLI (tested with
+0.154.0), in addition to the extraction requirements above. Each run consumes the
+selected agent's allowance. The Codex adapter restricts tool writes to its workspace
+and disables tool network access and approval escalation. It does not install
+project dependencies automatically.
+
+Inspect `result.json` and `workspace/` in the output directory. Failed, interrupted,
+and timed-out runs retain partial results. Missing token/cost metrics are represented
+explicitly. An optional `--pricing` table produces a labeled token-rate estimate;
+no model prices are hard-coded. Existing output directories are never overwritten.
+
+See the [runner Skill](skills/run-benchmark/SKILL.md) and
+[runner guide](skills/run-benchmark/references/runner.md) for permissions, result
+fields, pricing, programmatic invocation, and the adapter interface.
+
 ## Status and design
 
 This project is at an early stage. Extraction and version 2 of the case format are
-implemented; existing version 1 cases remain readable. The benchmark runner, provider adapters, metrics collection, and
-automated evaluation are not implemented yet. Human review determines whether an
-extracted candidate faithfully represents the original task.
+implemented; existing version 1 cases remain readable. A benchmark runner with a
+Codex adapter records outputs and execution metrics. Additional agent integrations
+can be added through adapters. Automated quality evaluation is not implemented;
+human review determines task fidelity and result quality.
 
 See the following issues for the project goals and planned implementation:
 
