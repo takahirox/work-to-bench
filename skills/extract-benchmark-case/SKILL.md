@@ -42,8 +42,12 @@ Review selected files and context for credentials, private data, and irrelevant
 material. Bundles include the selected commit's reachable Git history, not just
 the visible files. Explain this when reporting what was packaged; do not upload
 or publish the case unless requested. Never include ignored/untracked files by
-default. The helper accepts an explicit patch rather than capturing dirty work
-automatically. Git LFS pointers and submodules are unsupported in version 1.
+default. The helper accepts explicit patches rather than capturing dirty work
+automatically. It includes recursive submodule bundles and LFS objects needed by
+the selected starting trees. For prerequisites inside a submodule, use
+`--submodule-patch <root-relative-path>=<patch-file>`; ancestor gitlinks are updated
+only in the isolated snapshot. Do not substitute a submodule's current HEAD for
+the commit recorded by its parent.
 
 ## Package and verify
 
@@ -51,12 +55,22 @@ Use `scripts/benchmark_case.py create` with an explicit base, stable case ID,
 prompt file, and new output directory outside the source repository. Supply
 `--patch` only for reviewed prerequisites and `--context` for each necessary file.
 Supply a credential-free repository identity with `--source`; the helper does
-not copy remote URLs or host paths automatically.
+not copy remote URLs or host paths into metadata automatically. Repository history
+can itself contain URLs in `.gitmodules` or `.lfsconfig`.
+
+Use local submodule repositories and LFS caches when available. For missing inputs,
+read the guide's `--submodule-source` and `--lfs-object-dir` options. Use
+`--fetch-missing` when network retrieval is within the user's authorized scope;
+it reads repository URLs and downloads into temporary repositories, never the
+source caches. Missing remote access or objects must be reported without dropping
+the affected files from the case.
 
 Run `scripts/benchmark_case.py validate <case-directory>` to verify the metadata,
 file hashes, and independent restoration of the exact Git snapshot. Inspect the
 packaged prompt and restored starting tree for task completeness and answer
-leakage; mechanical validation cannot determine either.
+leakage; mechanical validation cannot determine either. Use `restore <case-directory>
+--output <new-directory>` for offline inspection of root and submodule worktrees
+with LFS content. The restore helper does not run project commands.
 
 Report the case location, ID, base and starting commit, included prerequisites and
 context, validation result, and any assumptions or limitations. No source refs or
