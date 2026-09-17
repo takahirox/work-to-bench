@@ -39,6 +39,125 @@ of instructions for an AI agent) and supporting tools:
 Keeping these responsibilities separate is intended to make cases portable across
 agents and model families, while allowing the case format and runner to evolve.
 
+## Install the Skills in Codex
+
+You need Python 3.11+ and Git 2.43+. Running benchmarks also requires macOS or
+Linux and an authenticated Codex CLI (tested with 0.154.0). Git LFS 3.x is needed
+to download missing LFS objects or restore LFS files. No additional Python
+packages are required.
+
+### Install for one project
+
+In the commands below, replace `/path/to/work-to-bench` with an absolute path
+for this checkout and `/path/to/your-project` with the target Git project's root.
+Choose project-scoped or user-wide installation to avoid duplicate Skill entries.
+The copy commands assume neither Skill is already installed in the destination;
+for an update, replace the existing folders with the complete new versions.
+
+Clone this repository if you do not already have a checkout:
+
+```sh
+git clone https://github.com/takahirox/work-to-bench.git /path/to/work-to-bench
+```
+
+Copy both complete Skill folders into the target project:
+
+```sh
+cd /path/to/your-project
+mkdir -p .agents/skills
+cp -R /path/to/work-to-bench/skills/extract-benchmark-case \
+      /path/to/work-to-bench/skills/run-benchmark \
+      .agents/skills/
+```
+
+The installed layout should be:
+
+```text
+.agents/skills/
+  extract-benchmark-case/
+    SKILL.md
+    agents/
+    references/
+    scripts/
+  run-benchmark/
+    SKILL.md
+    agents/
+    references/
+    scripts/
+```
+
+Keep both folders alongside each other: the runner imports the extraction
+Skill's validation and restoration helper. Copying only `SKILL.md` is not enough.
+
+### Install for all your projects
+
+As an alternative to project installation, copy the same folders into your
+personal Skills directory:
+
+```sh
+mkdir -p "$HOME/.agents/skills"
+cp -R /path/to/work-to-bench/skills/extract-benchmark-case \
+      /path/to/work-to-bench/skills/run-benchmark \
+      "$HOME/.agents/skills/"
+```
+
+Open Codex in the target project. In Codex CLI or the IDE extension, use `/skills`
+or type `$` to select a Skill. Codex detects installed Skills automatically;
+restart it if they do not appear. See the
+[official Codex Skills documentation](https://developers.openai.com/codex/skills/)
+for discovery locations and invocation. Other agents can follow the same
+`SKILL.md` instructions explicitly, but their installation mechanisms may differ.
+
+## Use the Skills: extract, run, and inspect
+
+After working on a task in your project, invoke the extraction Skill in the
+conversation containing that work. Replace `<pre-task-commit>` with the commit
+before the task began, not the commit containing the completed solution:
+
+```text
+$extract-benchmark-case Capture the task we just worked on as a benchmark case.
+Use <pre-task-commit> as the base commit and my-task as the case ID.
+Save it to /path/to/benchmarks/cases/my-task and validate the case.
+```
+
+Use absolute paths appropriate for your machine. The case destination must not
+already exist and must be outside the source repository. The Skill infers the
+task from the available conversation and Git state, asks for clarification when
+needed, and packages a self-contained prompt. If prerequisites were uncommitted
+at the start, identify them explicitly so only those changes are included, without
+the completed solution. Extraction requires explicit invocation.
+
+Review the generated `prompt.md` and starting snapshot, then invoke the runner.
+Replace `YOUR_MODEL` with the model you want to use; choose a reasoning effort
+supported by that model (the example uses `medium`):
+
+```text
+$run-benchmark Run /path/to/benchmarks/cases/my-task once with the Codex adapter.
+Use model YOUR_MODEL and reasoning effort medium.
+Save the results to /path/to/benchmarks/runs/my-task-001.
+```
+
+The run destination must be new, outside existing Git working trees, and outside
+the case directory. Choose a different destination for each run. The runner uses
+your existing Codex CLI authentication, and each run consumes the selected agent's
+allowance. It does not install project dependencies automatically; tool network
+access and approval escalation are disabled during the run.
+
+Inspect these paths under `/path/to/benchmarks/runs/my-task-001/`:
+
+| Path | What to inspect |
+| --- | --- |
+| `result.json` | Completion status, agent/model settings, timing, available token usage, and errors. |
+| `workspace/` | The restored repository after execution, including new files and submodules. |
+| `artifacts/root/changes.patch` | Tracked-file changes from the starting commit. |
+| `artifacts/root/status.txt` | Final Git status; untracked file contents remain in `workspace/`. |
+| `artifacts/<submodule-path-hash>/` | Separate changes and status for each starting submodule. |
+| `stdout.jsonl` and `stderr.log` | Agent events and diagnostic output. |
+
+A `completed` run is not proof that the solution is correct: review the code and
+its validation results. Failed and interrupted runs retain partial outputs for
+inspection. Missing usage or cost metrics are unavailable, not zero.
+
 ## Extract a benchmark case
 
 The first implementation provides an explicitly invoked extraction Skill and a
@@ -47,29 +166,13 @@ self-contained bundle, recursive submodule bundles, Git LFS objects, and optiona
 context files. The source repository's working
 tree, index, and branches are preserved, including uncommitted work.
 
-Requirements: Python 3.11+ and Git 2.43+. Git LFS 3.x is needed to download missing
-LFS objects or restore LFS files. No additional Python packages are needed.
-
-To use the Skill in Codex, copy `skills/extract-benchmark-case` into your agent's
-Skill directory (for example, `~/.codex/skills/`), then start a session where the
-Skill is available and explicitly invoke it:
-
-```text
-$extract-benchmark-case Capture the task we just worked on as a benchmark case.
-```
-
-The Skill infers the task and starting point from the available conversation and
-Git state, asking for clarification when needed. Its invocation policy disables
-implicit activation. Other agents can follow the same `SKILL.md` instructions
-explicitly; their installation and discovery mechanisms may differ.
-
-The helper can also be used directly once you have selected the base and written
-a self-contained prompt:
+To use the helper directly, run the following from your work-to-bench checkout
+after selecting the base and writing a self-contained prompt:
 
 ```sh
 python3 skills/extract-benchmark-case/scripts/benchmark_case.py create \
   --repo /path/to/source-repository \
-  --base <starting-commit> \
+  --base "<starting-commit>" \
   --id my-task \
   --source example/project \
   --prompt /path/to/task.md \
@@ -108,9 +211,9 @@ python3 -m unittest discover -s tests -v
 
 The runner restores each case into a new workspace, runs a selected agent, and
 preserves the final repositories, diffs, untracked files, logs, timing, and available
-usage metrics. The first adapter supports Codex CLI. Install both Skill folders
-(`run-benchmark` and `extract-benchmark-case`) alongside each other to invoke
-`$run-benchmark`, or run the helper from this checkout:
+usage metrics. The first adapter supports Codex CLI. After following the
+[installation and usage guide](#install-the-skills-in-codex) above, you can also
+run the helper directly from your work-to-bench checkout:
 
 ```sh
 python3 skills/run-benchmark/scripts/benchmark_runner.py /path/to/cases/my-task \
