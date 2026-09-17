@@ -1,0 +1,5 @@
+interface:
+  display_name: "Extract Benchmark Case"
+  short_description: "Capture a work session as a portable benchmark case"
+policy:
+  allow_implicit_invocation: false
