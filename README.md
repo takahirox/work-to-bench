@@ -42,7 +42,8 @@ agents and model families, while allowing the case format and runner to evolve.
 ## Install the Skills in Codex
 
 You need Python 3.11+ and Git 2.43+. Running benchmarks also requires macOS or
-Linux and an authenticated Codex CLI (tested with 0.154.0). Git LFS 3.x is needed
+Linux and your selected agent. The Codex adapter requires an authenticated Codex
+CLI (tested with 0.154.0); external command integrations do not require Codex. Git LFS 3.x is needed
 to download missing LFS objects or restore LFS files. No additional Python
 packages are required.
 
@@ -211,7 +212,7 @@ python3 -m unittest discover -s tests -v
 
 The runner restores each case into a new workspace, runs a selected agent, and
 preserves the final repositories, diffs, untracked files, logs, timing, and available
-usage metrics. The first adapter supports Codex CLI. After following the
+usage metrics. Built-in adapters support Codex CLI and external agent commands. After following the
 [installation and usage guide](#install-the-skills-in-codex) above, you can also
 run the helper directly from your work-to-bench checkout:
 
@@ -221,15 +222,52 @@ python3 skills/run-benchmark/scripts/benchmark_runner.py /path/to/cases/my-task 
   --agent codex --model YOUR_MODEL --effort medium --timeout 1800
 ```
 
-Running requires macOS or Linux and an authenticated Codex CLI (tested with
-0.154.0), in addition to the extraction requirements above. Each run consumes the
+Running requires macOS or Linux and the selected agent, in addition to the
+extraction requirements above. Codex runs require an authenticated Codex CLI
+(tested with 0.154.0). Each run consumes the
 selected agent's allowance. The Runner does not impose a sandbox, network policy,
 or approval policy. It does not install project dependencies automatically.
+
+### Run another AI agent
+
+Use `--agent command` with a JSON configuration to connect a CLI agent or an
+API-backed wrapper without changing the Runner. For example, save this as
+`/path/to/agent.json`, replacing the command with your agent's actual executable
+and arguments:
+
+```json
+{
+  "name": "my-agent",
+  "command": ["/absolute/path/to/my-agent", "run"]
+}
+```
+
+```sh
+python3 skills/run-benchmark/scripts/benchmark_runner.py /path/to/cases/my-task \
+  --output /path/to/runs/external-001 \
+  --agent command --agent-config /path/to/agent.json
+```
+
+The command runs in the restored workspace and receives the task on stdin. For
+other input protocols, use a wrapper or `{prompt_file}` argument. Model and effort
+are optional unless the configuration uses their placeholders. In a Skill request,
+select the command adapter and provide the configuration, case, and output paths.
+
+The Runner retains changes, timing, exit status, `stdout.log`, and `stderr.log`.
+Generic command runs do not require Codex JSONL; unavailable usage and cost remain
+unknown. Exit zero does not prove a correct solution. See the
+[external-agent contract](skills/run-benchmark/references/runner.md#external-agents-through-commands)
+for placeholders, optional version queries, and wrappers that support execution
+conditions. No condition support is assumed for arbitrary commands.
+
+### Select execution conditions
 
 Pass `--conditions /path/to/conditions.json` to choose execution conditions. For
 example, `{"sandbox":"workspace-write","network_access":true,"approval_policy":"never"}`
 explicitly enables tool networking in a workspace-write sandbox. With no conditions,
-Codex inherits its own configuration and host policy. In a Skill invocation, specify
+the selected agent inherits its own configuration and host policy. The JSON
+example above is for Codex; command integrations require a wrapper that declares
+and implements those condition keys. In a Skill invocation, specify
 the conditions file alongside the case, model, and destination. Unknown or incompatible
 conditions are rejected; the Runner never retries with changed permissions.
 
@@ -251,9 +289,8 @@ fields, pricing, programmatic invocation, and the adapter interface.
 ## Status and design
 
 This project is at an early stage. Extraction and version 2 of the case format are
-implemented; existing version 1 cases remain readable. A benchmark runner with a
-Codex adapter records outputs and execution metrics. Additional agent integrations
-can be added through adapters. Automated quality evaluation is not implemented;
+implemented; existing version 1 cases remain readable. A benchmark runner with Codex and external-command adapters records outputs and
+execution metrics. Agent-specific telemetry can be added through Python adapters. Automated quality evaluation is not implemented;
 human review determines task fidelity and result quality.
 
 See the following issues for the project goals and planned implementation:

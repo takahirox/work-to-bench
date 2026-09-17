@@ -16,6 +16,7 @@ import time
 
 from runner_adapters import ADAPTERS, reject_constant
 from execution_conditions import load_conditions
+from command_adapter import CommandAdapter
 
 
 class RunError(ValueError):
@@ -183,19 +184,31 @@ def collect_artifacts(output, meta, case):
     return artifacts, errors
 
 
-def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
-                  executable='codex', timeout=1800, pricing=None, adapter=None, conditions=None):
+def run_benchmark(case_directory, output, *, model=None, effort=None, agent='codex',
+                  executable=None, timeout=1800, pricing=None, adapter=None, conditions=None, agent_config=None):
     """Run once. A custom adapter can implement the three CodexAdapter methods."""
     if os.name != 'posix':
         raise RunError('The process-group runner currently requires macOS or Linux')
-    if not model or not isinstance(model, str):
-        raise RunError('An explicit model is required')
     if not math.isfinite(timeout) or timeout <= 0:
         raise RunError('Timeout must be a positive finite number of seconds')
+    if agent_config is not None and (adapter is not None or agent != 'command'):
+        raise RunError('--agent-config requires --agent command and no Python adapter')
     if adapter is None:
-        if agent not in ADAPTERS:
-            raise RunError('Unknown agent adapter')
-        adapter = ADAPTERS[agent]()
+        if agent == 'command':
+            if agent_config is None:
+                raise RunError('--agent command requires --agent-config')
+            if executable is not None:
+                raise RunError('Set the executable in the command configuration, not --executable')
+            adapter = CommandAdapter(agent_config)
+        else:
+            if agent not in ADAPTERS:
+                raise RunError('Unknown agent adapter')
+            adapter = ADAPTERS[agent]()
+    if hasattr(adapter, 'validate_selection'):
+        adapter.validate_selection(model, effort)
+    if pricing is not None and not model:
+        raise RunError('Pricing requires an explicit model')
+    executable = executable or 'codex'
     requested = load_conditions(conditions)
     if hasattr(adapter, 'configure'):
         adapter.configure(requested)
@@ -222,10 +235,15 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir(mode=0o700)
     begin = time.monotonic()
+    stdout_name = getattr(adapter, 'stdout_filename', 'stdout.jsonl')
+    if stdout_name not in ('stdout.jsonl', 'stdout.log'):
+        raise RunError('Unsupported stdout filename')
     result = {
         'schema_version': 2, 'case_id': meta['id'], 'status': 'preparing',
         'agent': {'adapter': adapter.name, 'provider': adapter.provider, 'version': None,
-                  'requested_model': model, 'reported_model': None, 'reasoning_effort': effort},
+                  'requested_model': model, 'reported_model': None, 'reasoning_effort': effort,
+                  'integration': getattr(adapter, 'integration_name', adapter.name),
+                  'integration_config': getattr(adapter, 'config', None)},
         'configuration': {'timeout_seconds': timeout,
                           'execution_conditions': {
                               'requested': requested, 'submitted': None,
@@ -237,12 +255,12 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
         'timing': {'started_at': now(), 'finished_at': None, 'elapsed_seconds': None,
                    'agent_started_at': None, 'agent_finished_at': None, 'agent_elapsed_seconds': None},
         'exit_code': None, 'usage': None, 'cost': None,
-        'logs': {'stdout': 'stdout.jsonl', 'stderr': 'stderr.log'},
+        'logs': {'stdout': stdout_name, 'stderr': 'stderr.log'},
         'workspace': 'workspace', 'inputs': 'inputs', 'artifacts': [], 'warnings': [], 'errors': [],
     }
     write_json(output / 'result.json', result)
     workspace = output / 'workspace'
-    stdout, stderr = output / 'stdout.jsonl', output / 'stderr.log'
+    stdout, stderr = output / stdout_name, output / 'stderr.log'
     stdout.touch()
     stderr.touch()
     process = None
@@ -252,6 +270,7 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
     try:
         inputs = output / 'inputs'
         inputs.mkdir()
+        write_json(inputs / 'conditions.json', requested)
         write_json(inputs / 'case.json', meta)
         (inputs / 'prompt.md').write_bytes(case.regular(case_directory / 'prompt.md'))
         for name in meta['context']:
@@ -267,13 +286,15 @@ def run_benchmark(case_directory, output, *, model, effort=None, agent='codex',
                   + (inputs / 'prompt.md').read_text(encoding='utf-8'))
         (inputs / 'invocation.md').write_text(prompt, encoding='utf-8')
         env = process_environment()
-        version = subprocess.run(adapter.version_command(executable), stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True, env=env, cwd=workspace, timeout=15)
-        if version.stderr:
-            stderr.write_text(version.stderr, encoding='utf-8')
-        if version.returncode:
-            raise RunError('Unable to determine agent version')
-        result['agent']['version'] = version.stdout.strip()[:200]
+        version_command = adapter.version_command(executable)
+        if version_command is not None:
+            version = subprocess.run(version_command, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, env=env, cwd=workspace, timeout=15)
+            if version.stderr:
+                stderr.write_text(version.stderr, encoding='utf-8')
+            if version.returncode:
+                raise RunError('Unable to determine agent version')
+            result['agent']['version'] = version.stdout.strip()[:200]
         command = adapter.command(executable, workspace, model, effort)
         result['command'] = command
         result['status'] = 'running'
@@ -342,10 +363,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('case_directory')
     parser.add_argument('--output', required=True)
-    parser.add_argument('--agent', choices=sorted(ADAPTERS), default='codex')
-    parser.add_argument('--model', required=True)
-    parser.add_argument('--effort', choices=('none', 'minimal', 'low', 'medium', 'high', 'xhigh'))
-    parser.add_argument('--executable', default='codex')
+    parser.add_argument('--agent', choices=sorted([*ADAPTERS, 'command']), default='codex')
+    parser.add_argument('--model')
+    parser.add_argument('--effort')
+    parser.add_argument('--executable', help='Codex executable override')
+    parser.add_argument('--agent-config', help='External command integration JSON')
     parser.add_argument('--timeout', type=float, default=1800)
     parser.add_argument('--conditions', help='JSON execution conditions; omitted keys inherit agent settings')
     parser.add_argument('--pricing', help='JSON table of per-million-token USD rates for this model')
@@ -355,7 +377,7 @@ def main():
     signal.signal(signal.SIGTERM, terminate)
     try:
         result = run_benchmark(args.case_directory, args.output, model=args.model, effort=args.effort,
-                               agent=args.agent, executable=args.executable, timeout=args.timeout, pricing=args.pricing, conditions=args.conditions)
+                               agent=args.agent, executable=args.executable, timeout=args.timeout, pricing=args.pricing, conditions=args.conditions, agent_config=args.agent_config)
     except (ValueError, OSError) as exc:
         print('error: ' + str(exc), file=sys.stderr)
         return 1

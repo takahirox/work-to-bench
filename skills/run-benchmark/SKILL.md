@@ -11,12 +11,15 @@ result fields, pricing, and failure handling. This Skill requires
 case validator and restoration helper.
 
 Select the case and agent/model/effort from the user's request and current context.
-Ask only if a necessary choice cannot be inferred. Use an explicit model and a
-new run directory outside existing Git working trees and outside the case. Do not
+Ask only if a necessary choice cannot be inferred. Codex requires an explicit
+model; external commands use model/effort only if their configuration declares
+placeholders. Use a new run directory outside existing Git working trees and outside the case. Do not
 change the benchmark task, starting state, or context to improve a result.
 
 Invoke `scripts/benchmark_runner.py` relative to this Skill directory. The shipped
-adapter is `codex`, using the existing CLI authentication. Pass user-selected
+adapters are `codex`, using existing CLI authentication, and `command`, using
+`--agent-config` to load a user-selected external command or wrapper. Do not assume
+an arbitrary command accepts Codex flags or emits Codex JSONL. Pass user-selected
 execution conditions through `--conditions`; omitted settings inherit agent and
 environment defaults. Do not invent restrictions or broaden conditions on failure.
 Report unsupported conditions and host-policy conflicts without retrying under a

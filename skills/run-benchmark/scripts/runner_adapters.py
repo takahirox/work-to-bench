@@ -13,6 +13,12 @@ class CodexAdapter:
     provider = 'openai'
     supported_conditions = SUPPORTED
 
+    def validate_selection(self, model, effort):
+        if not isinstance(model, str) or not model or '\x00' in model:
+            raise ValueError('Codex requires an explicit model')
+        if effort is not None and effort not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh'):
+            raise ValueError('Unsupported Codex effort')
+
     def configure(self, conditions):
         self.conditions = codex_conditions(conditions)
 
