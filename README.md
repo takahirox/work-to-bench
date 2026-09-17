@@ -48,15 +48,19 @@ packages are required.
 
 ### Install for one project
 
+In the commands below, replace `/path/to/work-to-bench` with an absolute path
+for this checkout and `/path/to/your-project` with the target Git project's root.
+Choose project-scoped or user-wide installation to avoid duplicate Skill entries.
+The copy commands assume neither Skill is already installed in the destination;
+for an update, replace the existing folders with the complete new versions.
+
 Clone this repository if you do not already have a checkout:
 
 ```sh
 git clone https://github.com/takahirox/work-to-bench.git /path/to/work-to-bench
 ```
 
-Replace `/path/to/work-to-bench` with that checkout's absolute path and
-`/path/to/your-project` with the target Git project's root. Then copy both complete
-Skill folders into the target project:
+Copy both complete Skill folders into the target project:
 
 ```sh
 cd /path/to/your-project
@@ -96,10 +100,6 @@ cp -R /path/to/work-to-bench/skills/extract-benchmark-case \
       /path/to/work-to-bench/skills/run-benchmark \
       "$HOME/.agents/skills/"
 ```
-
-Choose one installation scope to avoid duplicate entries. These commands assume
-neither Skill is already installed in the destination; for an update, replace the
-existing Skill folders with the complete new versions.
 
 Open Codex in the target project. In Codex CLI or the IDE extension, use `/skills`
 or type `$` to select a Skill. Codex detects installed Skills automatically;
