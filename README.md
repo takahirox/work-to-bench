@@ -146,7 +146,9 @@ names are illustrative: use your project's actual commands and versions.
    Preserve the expected import behavior from our agreed requirements.
    In the task, reference docs/development.md for the required Node/npm versions,
    run npm ci, fix the bug, add a regression test using context/sample.csv,
-   and run npm test. Record the test results and any setup failures.
+   and run npm test. Use a workspace-local npm cache at .npm-cache for installation
+   and testing (set npm_config_cache to that directory). Record the test results
+   and any setup failures.
    Save and validate the case at /path/to/benchmarks/cases/csv-import.
    Exclude the completed fix and its solution-specific explanation.
    ```
@@ -159,7 +161,10 @@ names are illustrative: use your project's actual commands and versions.
    not task completeness or whether a solution leaked into the inputs.
 4. **You prepare the host and select conditions.** Ensure the specified Node/npm
    versions and authenticated agent are available. For this example, allow the
-   registry access needed by `npm ci`. For Codex, save the following as
+   registry access needed by `npm ci`. The task uses a workspace-local npm cache
+   because the selected sandbox may not allow writes to the usual home-directory
+   cache. Verify any other project-specific write requirements as well. For Codex,
+   save the following as
    `/path/to/conditions.json`; it is an explicit choice for this run, not a default:
 
    ```json
