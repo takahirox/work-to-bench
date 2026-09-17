@@ -8,7 +8,7 @@ standard Git LFS. It does not evaluate solution quality or modify the source cas
 
 - Python 3.11+, Git 2.43+, and macOS or Linux (process-group termination uses POSIX).
 - Git LFS 3.x when the case includes LFS payloads.
-- Codex CLI with `exec --json`, `--ephemeral`, and `--ignore-user-config`; tested
+- For the Codex adapter: Codex CLI with `exec --json` (and requested optional flags); tested
   with version 0.154.0. Use existing CLI authentication or authentication supplied
   through your execution environment. Credentials are not copied into run results.
 - Install both `run-benchmark` and `extract-benchmark-case` as adjacent Skill
@@ -22,7 +22,9 @@ python3 skills/run-benchmark/scripts/benchmark_runner.py /path/to/case \
   --agent codex --model YOUR_MODEL --effort medium --timeout 1800
 ```
 
-`--model` is required. `--effort` is optional; supported values depend on the model.
+`--model` is required for Codex. For external commands, model and effort are
+required only when their corresponding placeholders are used. `--effort` values
+depend on the selected adapter and model.
 An omitted effort uses the agent's default and is recorded as `null`, not guessed.
 `--executable` can select a particular installed Codex executable. `--timeout` is a
 positive number of seconds for the agent process, excluding preparation and artifact
@@ -31,6 +33,91 @@ configuration or repetition; completed and failed runs can coexist.
 
 For an installed Skill, ask the agent to use `$run-benchmark` with a case, model,
 and destination. Run results remain local unless you explicitly share them.
+
+## External agents through commands
+
+Use `--agent command --agent-config /path/to/agent.json` to run an external agent
+without modifying this repository or installing Codex. The configuration is a
+JSON object. For an agent that reads its task from stdin, an example is:
+
+```json
+{
+  "name": "my-agent",
+  "command": ["/absolute/path/to/my-agent", "run"]
+}
+```
+
+Replace the executable and arguments with those required by your agent. This is
+an argv array, not a shell command: pipes, redirects, and shell expansion are not
+performed. Supply a script or wrapper when your agent needs an API, a different
+input protocol, or extra setup. The wrapper must wait for the agent to finish and
+return a nonzero exit status on failure, including rejected execution conditions.
+
+```sh
+python3 skills/run-benchmark/scripts/benchmark_runner.py /path/to/cases/my-task \
+  --output /path/to/runs/external-001 \
+  --agent command --agent-config /path/to/agent.json --timeout 1800
+```
+
+The process runs with the restored workspace as its current directory and receives
+the complete invocation on stdin. The manifest supports:
+
+| Key | Meaning |
+| --- | --- |
+| `name` | Required nonempty integration identity recorded in results. |
+| `command` | Required nonempty argv array. |
+| `provider` | Optional descriptive provider identity; otherwise unknown. |
+| `version_command` | Optional literal argv array, run before the task. Omit if unavailable; a failed explicit probe fails the run. |
+| `supported_conditions` | Optional distinct execution-condition keys that the wrapper promises to validate and apply. Default: none. |
+
+Executable paths containing `/` resolve relative to the configuration file;
+other executable names use `PATH`. Other relative arguments resolve from the
+restored workspace, so use absolute paths for wrapper scripts outside it. Keep
+credentials in your authentication environment: the manifest and expanded argv
+are saved in results and must not contain secrets.
+
+Command arguments may contain these placeholders, substituted within each argv
+entry without shell evaluation:
+
+- `{workspace}`: restored repository directory.
+- `{prompt_file}`: absolute path to the UTF-8 invocation also sent on stdin.
+- `{context_dir}`: packaged context directory (may not exist if no context was supplied).
+- `{conditions_file}`: absolute path to a JSON object containing requested conditions.
+- `{model}` and `{effort}`: user-selected values; each must be supplied exactly when
+  its placeholder is used. No model or effort is invented for external agents.
+
+Placeholders are not allowed in the executable or `version_command`. Braced
+lowercase names are reserved for these placeholders; put complex inline code in
+a wrapper file instead. Unknown manifest keys and placeholders are rejected.
+
+For example, a wrapper that supports a network condition and explicit model:
+
+```json
+{
+  "name": "my-api-wrapper",
+  "command": ["python3", "/absolute/path/to/wrapper.py",
+              "--task", "{prompt_file}", "--conditions", "{conditions_file}",
+              "--model", "{model}"],
+  "supported_conditions": ["network_access"]
+}
+```
+
+Add `--model YOUR_MODEL --conditions /path/to/conditions.json` to the run command.
+Declaring condition support requires a `{conditions_file}` argument. The Runner
+rejects keys outside the declared support list before restoration. The wrapper
+owns value validation, translation, and enforcement for its agent; it must reject
+unsupported combinations or host-policy conflicts rather than silently ignore
+them. Merely declaring support is not evidence of enforcement, so effective
+conditions remain unverified. These integrations are trusted executable code,
+not a sandbox provided by the Runner.
+
+Plain stdout is saved as `stdout.log`; stderr is saved as `stderr.log`. Exit zero
+means process completion only, never solution correctness. Nonzero exits, launch
+errors, timeouts, and interruptions retain available logs and artifacts. Version,
+reported model, token usage, and cost remain null when unavailable. The generic
+command adapter does not parse optional agent-specific telemetry; use the Python
+adapter interface below when structured telemetry is needed. Agent/model choices,
+manifest, expanded argv, and requested/submitted conditions are saved for comparison.
 
 ## Execution and isolation
 
@@ -111,8 +198,9 @@ my-run/
     case.json
     prompt.md
     invocation.md
+    conditions.json         # Requested execution conditions
     context/               # When provided by the case
-  stdout.jsonl              # Raw Codex event stream
+  stdout.jsonl              # Raw Codex events; stdout.log for command integrations
   stderr.log
   workspace/                # Preserved final repository and submodule worktrees
   artifacts/
@@ -142,8 +230,9 @@ Important fields:
 | `warnings`, `errors` | Telemetry gaps or setup/artifact failures. Raw agent details remain in the logs. |
 
 The runner reports `completed` only when the process exits successfully and the
-adapter observes a terminal success without a terminal failure, unfinished final turn, or malformed event
-stream. This is an execution outcome, not a correctness score.
+adapter observes its completion condition. For Codex, this requires a terminal
+success without a terminal failure, unfinished final turn, or malformed event
+stream. For command integrations, completion uses the process exit status. This is an execution outcome, not a correctness score.
 
 Tracked-file patches compare the original starting commit to the final working
 tree, including committed and uncommitted changes. Untracked paths are listed in
@@ -212,7 +301,8 @@ An adapter has `name` and `provider` attributes. It may expose `supported_condit
 store execution settings. Without `configure`, nonempty conditions are rejected.
 It implements:
 
-- `version_command(executable)`: argument vector for a short version query.
+- `version_command(executable)`: argument vector for a short version query, or
+  `None` if unavailable.
 - `command(executable, workspace, model, effort)`: argument vector; the runner
   provides the prompt on stdin, streams stdout/stderr to files, and owns lifecycle.
 - `parse(stdout_path)`: returns `completed`, `reported_model`, `warnings`, and
@@ -226,7 +316,9 @@ in `runner_adapters.ADAPTERS` to expose it through the CLI. Generic lifecycle, c
 restoration, timing, and artifact collection do not depend on Codex event shapes.
 Adapters must normalize cached input as part of total input and reasoning as part
 of total output before using the shared estimator. They must enforce their own
-permissions; the shipped Codex adapter is the only integration currently provided.
+permissions; the Codex adapter and generic command adapter are the built-in integrations.
+Optional `validate_selection(model, effort)` rejects unsupported model/effort
+choices before restoration. Codex telemetry parsing is not required by the Runner.
 
 Official references: [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
