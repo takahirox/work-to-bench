@@ -1,0 +1,3 @@
+interface:
+  display_name: "Run Benchmark"
+  short_description: "Run benchmark cases and inspect outputs and metrics"
